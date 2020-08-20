@@ -8,11 +8,10 @@
 mod args;
 use crate::args::ArgRange;
 
-#[cfg(unix)]
 use std::cell::UnsafeCell;
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, Ordering, spin_loop_hint},
         Arc, Barrier,
     },
     thread,
@@ -57,7 +56,6 @@ impl<T> Mutex<T> for parking_lot::Mutex<T> {
     }
 }
 
-#[derive(Default)]
 #[repr(align(16))]
 struct SystemLock(UnsafeCell<[u64; 8]>);
 
@@ -96,6 +94,30 @@ impl SystemLock {
     }
 }
 
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn AcquireSRWLockExclusive(p: usize);
+    fn ReleaseSRWLockExclusive(p: usize);
+}
+
+#[cfg(windows)]
+impl SystemLock {
+    unsafe fn init(&mut self) {}
+
+    unsafe fn lock(&self) {
+        AcquireSRWLockExclusive(&self.0 as *const _ as usize);
+    }
+
+    unsafe fn unlock(&self) {
+        ReleaseSRWLockExclusive(&self.0 as *const _ as usize);
+    }
+
+    fn lock_name() -> &'static str {
+        "SRWLOCK"
+    }
+}
+
 struct SystemMutex<T>(UnsafeCell<T>, Box<SystemLock>);
 
 unsafe impl<T: Send> Sync for SystemMutex<T> {}
@@ -104,7 +126,7 @@ impl<T> Mutex<T> for SystemMutex<T> {
     fn new(v: T) -> Self {
         let mut mutex = Self(
             UnsafeCell::new(v),
-            Box::new(SystemLock::default()),
+            Box::new(SystemLock(UnsafeCell::new([0; 8]))),
         );
         unsafe { mutex.1.init() };
         mutex
@@ -139,6 +161,80 @@ impl<T> Mutex<T> for lock_bench::Mutex<T> {
     }
     fn name() -> &'static str {
         "custom::Mutex"
+    }
+}
+
+struct SpinLock<T>(UnsafeCell<T>, AtomicBool);
+
+unsafe impl<T: Send> Sync for SpinLock<T> {}
+
+impl<T> SpinLock<T> {
+    #[inline]
+    fn acquire(&self) {
+        if self
+            .1
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            self.acquire_slow();
+        }
+    }
+
+    #[cold]
+    fn acquire_slow(&self) {
+        let mut spin = 0usize;
+        let mut locked = true;
+
+        loop {
+            if !locked {
+                match self.1.compare_exchange_weak(
+                    false,
+                    true,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => return,
+                    Err(e) => locked = e,
+                }
+                spin = 0;
+                continue;
+            }
+
+            if spin <= 3 {
+                (0..(1 << spin)).for_each(|_| spin_loop_hint());
+            } else if cfg!(windows) {
+                std::thread::sleep(std::time::Duration::new(0, 0));
+            } else {
+                std::thread::yield_now();
+            }
+
+            locked = self.1.load(Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    fn release(&self) {
+        self.1.store(false, Ordering::Relaxed);
+    }
+}
+
+impl<T> Mutex<T> for SpinLock<T> {
+    fn new(v: T) -> Self {
+        Self(UnsafeCell::new(v), AtomicBool::new(false))
+    }
+
+    fn lock<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut T) -> R,
+    {
+        self.acquire();
+        let res = f(unsafe { &mut *self.0.get() });
+        self.release();
+        res    
+    }
+
+    fn name() -> &'static str {
+        "spin_lock"
     }
 }
 
@@ -268,6 +364,14 @@ fn run_all(
     );
 
     run_benchmark_iterations::<SystemMutex<f64>>(
+        num_threads,
+        work_per_critical_section,
+        work_between_critical_sections,
+        seconds_per_test,
+        test_iterations,
+    );
+
+    run_benchmark_iterations::<SpinLock<f64>>(
         num_threads,
         work_per_critical_section,
         work_between_critical_sections,
