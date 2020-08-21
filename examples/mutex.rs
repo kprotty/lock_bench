@@ -401,14 +401,6 @@ fn run_all(
         test_iterations,
     );
 
-    run_benchmark_iterations::<simple_mutex::Mutex<f64>>(
-        num_threads,
-        work_per_critical_section,
-        work_between_critical_sections,
-        seconds_per_test,
-        test_iterations,
-    );
-
     run_benchmark_iterations::<std::sync::Mutex<f64>>(
         num_threads,
         work_per_critical_section,

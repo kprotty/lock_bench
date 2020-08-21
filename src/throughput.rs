@@ -34,7 +34,7 @@ pub struct Mutex<T> {
 }
 
 unsafe impl<T: Send> Send for Mutex<T> {}
-unsafe impl<T: Send> Sync for Mutex<T> {}
+unsafe impl<T: Sync> Sync for Mutex<T> {}
 
 impl<T> From<T> for Mutex<T> {
     fn from(value: T) -> Self {
