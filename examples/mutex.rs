@@ -11,7 +11,7 @@ use crate::args::ArgRange;
 use std::cell::UnsafeCell;
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering, spin_loop_hint},
+        atomic::{spin_loop_hint, AtomicBool, Ordering},
         Arc, Barrier,
     },
     thread,
@@ -149,7 +149,7 @@ impl<T> Mutex<T> for SystemMutex<T> {
     }
 }
 
-impl<T> Mutex<T> for lock_bench::Mutex<T> {
+impl<T> Mutex<T> for lock_bench::eventually_fair::Mutex<T> {
     fn new(v: T) -> Self {
         Self::new(v)
     }
@@ -160,7 +160,22 @@ impl<T> Mutex<T> for lock_bench::Mutex<T> {
         f(&mut *self.lock())
     }
     fn name() -> &'static str {
-        "custom::Mutex"
+        "custom::eventually_fair::Mutex"
+    }
+}
+
+impl<T> Mutex<T> for lock_bench::throughput::Mutex<T> {
+    fn new(v: T) -> Self {
+        Self::new(v)
+    }
+    fn lock<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut T) -> R,
+    {
+        f(&mut *self.lock())
+    }
+    fn name() -> &'static str {
+        "custom::throughput::Mutex"
     }
 }
 
@@ -230,7 +245,7 @@ impl<T> Mutex<T> for SpinLock<T> {
         self.acquire();
         let res = f(unsafe { &mut *self.0.get() });
         self.release();
-        res    
+        res
     }
 
     fn name() -> &'static str {
@@ -308,7 +323,7 @@ fn run_benchmark_iterations<M: Mutex<f64> + Send + Sync + 'static>(
 
     let k_hz = 1.0 / seconds_per_test as f64 / 1000.0;
     println!(
-        "{:20} | {:10.3} kHz | {:10.3} kHz | {:10.3} kHz",
+        "{:30} | {:10.3} kHz | {:10.3} kHz | {:10.3} kHz",
         M::name(),
         average * k_hz,
         data[data.len() / 2] as f64 * k_hz,
@@ -343,8 +358,24 @@ fn run_all(
     *first = false;
 
     println!(
-        "{:^20} | {:^14} | {:^14} | {:^14}",
+        "{:^30} | {:^14} | {:^14} | {:^14}",
         "name", "average", "median", "std.dev."
+    );
+
+    run_benchmark_iterations::<lock_bench::throughput::Mutex<f64>>(
+        num_threads,
+        work_per_critical_section,
+        work_between_critical_sections,
+        seconds_per_test,
+        test_iterations,
+    );
+
+    run_benchmark_iterations::<lock_bench::eventually_fair::Mutex<f64>>(
+        num_threads,
+        work_per_critical_section,
+        work_between_critical_sections,
+        seconds_per_test,
+        test_iterations,
     );
 
     run_benchmark_iterations::<parking_lot::Mutex<f64>>(
@@ -372,14 +403,6 @@ fn run_all(
     );
 
     run_benchmark_iterations::<SpinLock<f64>>(
-        num_threads,
-        work_per_critical_section,
-        work_between_critical_sections,
-        seconds_per_test,
-        test_iterations,
-    );
-
-    run_benchmark_iterations::<lock_bench::Mutex<f64>>(
         num_threads,
         work_per_critical_section,
         work_between_critical_sections,
