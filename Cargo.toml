@@ -6,3 +6,4 @@ authors = ["kprotty"]
 
 [dev-dependencies]
 parking_lot = "0.11"
+simple-mutex = "1.1"
