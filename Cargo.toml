@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2018"
 authors = ["kprotty"]
 
+[[bench]]
+name = "mutex"
+harness = false
+
 [dev-dependencies]
 parking_lot = "0.11"
-simple-mutex = "1.1"
