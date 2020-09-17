@@ -19,10 +19,7 @@ impl super::Lock for Lock {
     }
 }
 
-use std::{
-    thread,
-    cell::Cell,
-};
+use std::{cell::Cell, thread};
 
 pub struct Parker(Cell<Option<thread::Thread>>);
 
@@ -42,6 +39,9 @@ impl ulock::core::ThreadParker for Parker {
     }
 
     fn unpark(&self) {
-        self.0.replace(None).expect("prepare_park() not called").unpark()
+        self.0
+            .replace(None)
+            .expect("prepare_park() not called")
+            .unpark()
     }
 }

@@ -1,15 +1,15 @@
 use core::{
+    cell::{Cell, UnsafeCell},
     fmt,
-    pin::Pin,
+    future::Future,
     hint::unreachable_unchecked,
-    marker::{PhantomPinned, PhantomData},
-    ptr::{drop_in_place, read, write, NonNull},
+    marker::{PhantomData, PhantomPinned},
     mem::MaybeUninit,
     ops::{Deref, DerefMut},
-    cell::{Cell, UnsafeCell},
-    future::Future,
-    task::{Context, Poll, Waker, RawWaker, RawWakerVTable},
-    sync::atomic::{fence, AtomicUsize, Ordering, spin_loop_hint},
+    pin::Pin,
+    ptr::{drop_in_place, read, write, NonNull},
+    sync::atomic::{AtomicUsize, Ordering},
+    task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
 };
 
 use super::ThreadParker;
@@ -116,12 +116,8 @@ impl<T> Lock<T> {
     unsafe fn lock_slow<'a, P: ThreadParker>(future: LockFuture<'a, T>) -> LockGuard<'a, T> {
         struct ParkWaker<P: ThreadParker>(PhantomData<*mut P>);
         impl<P: ThreadParker> ParkWaker<P> {
-            const VTABLE: RawWakerVTable = RawWakerVTable::new(
-                Self::clone,
-                Self::wake,
-                Self::wake,
-                |_| {},
-            );
+            const VTABLE: RawWakerVTable =
+                RawWakerVTable::new(Self::clone, Self::wake, Self::wake, |_| {});
 
             unsafe fn clone(ptr: *const ()) -> RawWaker {
                 (&*(ptr as *const P)).prepare_park();
@@ -151,7 +147,7 @@ impl<T> Lock<T> {
     pub unsafe fn unlock(&self) {
         let state = self.state.fetch_sub(LOCKED, Ordering::Release);
         if state != LOCKED {
-           self.unlock_slow(); 
+            self.unlock_slow();
         }
     }
 
@@ -192,23 +188,23 @@ impl<T> Lock<T> {
 
             if let Some(new_tail_ptr) = tail.prev.get().assume_init() {
                 head.tail.set(MaybeUninit::new(Some(new_tail_ptr)));
-                fence(Ordering::Release);
+                self.state.fetch_and(!WAKING, Ordering::Release);
             } else if let Err(e) = self.state.compare_exchange_weak(
                 state,
-                WAKING,
+                UNLOCKED,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
                 state = e;
                 continue;
             }
-            
+
             state = tail.state.load(Ordering::Relaxed);
             loop {
                 if state == WAKER_UPDATING {
                     match tail.state.compare_exchange_weak(
                         WAKER_UPDATING,
-                        WAKER_WAKING,
+                        WAKER_EMPTY,
                         Ordering::Relaxed,
                         Ordering::Relaxed,
                     ) {
@@ -228,9 +224,9 @@ impl<T> Lock<T> {
                     state = e;
                     continue;
                 }
-                
+
                 let waker = read(tail.waker_ptr());
-                tail.state.store(WAKER_WAKING, Ordering::Release);
+                tail.state.store(WAKER_EMPTY, Ordering::Release);
                 waker.wake();
                 return;
             }
@@ -242,7 +238,6 @@ const WAKER_EMPTY: usize = 0;
 const WAKER_WAITING: usize = 1;
 const WAKER_UPDATING: usize = 2;
 const WAKER_CONSUMING: usize = 3;
-const WAKER_WAKING: usize = 4;
 
 #[repr(align(4))]
 struct Waiter {
@@ -278,7 +273,7 @@ impl Waiter {
                 current = next;
                 if let Some(tail) = current.as_ref().tail.get().assume_init() {
                     self.tail.set(MaybeUninit::new(Some(tail)));
-                    break tail
+                    break tail;
                 }
             }
         });
@@ -315,14 +310,14 @@ impl<'a, T> Future for LockAsyncFuture<'a, T> {
                         Err(future) => {
                             mut_self.0 = Some(AsyncState::PollLock(future));
                             continue;
-                        },
+                        }
                     },
                     Some(AsyncState::PollLock(ref mut future)) => {
                         match Pin::new_unchecked(future).poll(ctx) {
                             Poll::Pending => return Poll::Pending,
                             Poll::Ready(guard) => guard,
                         }
-                    },
+                    }
                 };
 
                 mut_self.0 = None;
@@ -365,9 +360,8 @@ impl<'a, T> Future for LockFuture<'a, T> {
             let lock = mut_self.lock.expect("LockFuture polled after completion");
             let waker_ptr = mut_self.waiter.waker_ptr();
 
-            let is_waking = match mut_self.waiter.state.load(Ordering::Relaxed) {
-                WAKER_EMPTY => false,
-                WAKER_WAKING => true,
+            match mut_self.waiter.state.load(Ordering::Relaxed) {
+                WAKER_EMPTY => {}
                 WAKER_CONSUMING => return Poll::Pending,
                 WAKER_WAITING => match mut_self.waiter.state.compare_exchange(
                     WAKER_WAITING,
@@ -376,7 +370,7 @@ impl<'a, T> Future for LockFuture<'a, T> {
                     Ordering::Relaxed,
                 ) {
                     Err(waker_state) => match waker_state {
-                        WAKER_WAKING => true,
+                        WAKER_EMPTY => {}
                         WAKER_CONSUMING => return Poll::Pending,
                         _ => unreachable!("invalid updated waker state"),
                     },
@@ -392,18 +386,17 @@ impl<'a, T> Future for LockFuture<'a, T> {
                         ) {
                             Ok(_) => return Poll::Pending,
                             Err(waker_state) => {
-                                assert_eq!(waker_state, WAKER_WAKING, "invalid updated waker state");
+                                assert_eq!(waker_state, WAKER_EMPTY, "invalid updated waker state");
                                 drop_in_place(waker_ptr);
-                                true
-                            },
+                            }
                         }
-                    },
+                    }
                 },
                 _ => unreachable!("invalid waker state"),
             };
 
-            let mut spin = 0u8;
             let mut has_waker = false;
+            let mut spin = super::Spin::new();
             let mut state = lock.state.load(Ordering::Relaxed);
 
             loop {
@@ -412,13 +405,9 @@ impl<'a, T> Future for LockFuture<'a, T> {
 
                 if state & LOCKED == 0 {
                     new_state |= LOCKED;
-
-                } else if head.is_none() && (spin <= 6) {
-                    (0..(1 << spin)).for_each(|_| spin_loop_hint());
-                    spin += 1;
+                } else if head.is_none() && spin.yield_now() {
                     state = lock.state.load(Ordering::Relaxed);
                     continue;
-
                 } else {
                     new_state = (new_state & !WAITING) | (&mut_self.waiter as *const _ as usize);
                     mut_self.waiter.next.set(MaybeUninit::new(head));
@@ -429,13 +418,12 @@ impl<'a, T> Future for LockFuture<'a, T> {
                     has_waker = has_waker || {
                         write(waker_ptr, ctx.waker().clone());
                         mut_self.waiter.prev.set(MaybeUninit::new(None));
-                        mut_self.waiter.state.store(WAKER_WAITING, Ordering::Relaxed);
+                        mut_self
+                            .waiter
+                            .state
+                            .store(WAKER_WAITING, Ordering::Relaxed);
                         true
                     };
-                }
-
-                if is_waking {
-                    new_state &= !WAKING;
                 }
 
                 if let Err(e) = lock.state.compare_exchange_weak(
@@ -455,7 +443,7 @@ impl<'a, T> Future for LockFuture<'a, T> {
                 if has_waker {
                     drop_in_place(waker_ptr);
                 }
-                
+
                 mut_self.lock = None;
                 return Poll::Ready(LockGuard(lock));
             }
