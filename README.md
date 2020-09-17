@@ -1,8 +1,8 @@
 # mutex experimentations
-Implemented an eventually fair mutex as well as a throughput optimized, both only the size of a machine word.
+Benchmarking a variety of mutex implements to see under which conditions they perform best in their respected properties.
 
 ## benchmarking
-the examples folder contains the mutex benchmark found in [parking_lot](https://github.com/Amanieu/parking_lot) with more entries such as a cross platform systems lock, a spin lock, and the two usize mutexes above. To run the benchmark, execute:
+the benches folder contains the mutex benchmark found in [parking_lot](https://github.com/Amanieu/parking_lot) with the ability to add more entries. To run the benchmark, execute:
 
 ```
 Usage: cargo bench -- [measure] [threads] [locked] [unlocked]
