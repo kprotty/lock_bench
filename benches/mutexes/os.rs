@@ -80,7 +80,7 @@ mod os {
     }
 
     impl Lock {
-        const NAME: &'static str = "pthread_mutex_t";
+        pub const NAME: &'static str = "pthread_mutex_t";
 
         pub fn new() -> Self {
             let mutex = Box::new(UnsafeCell::new(pthread_mutex_t {
