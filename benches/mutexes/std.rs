@@ -1,10 +1,8 @@
-use super::Lock;
-
-pub struct Mutex {
+pub struct Lock {
     inner: std::sync::Mutex<()>,
 }
 
-impl Lock for Mutex {
+impl super::Lock for Lock {
     fn name() -> &'static str {
         "std::sync::Mutex"
     }

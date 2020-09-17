@@ -1,13 +1,10 @@
-use super::Lock;
-use std::{
-    sync::atomic::{AtomicBool, Ordering, spin_loop_hint},
-};
+use std::sync::atomic::{AtomicBool, Ordering, spin_loop_hint};
 
-pub struct Mutex {
+pub struct Lock {
     locked: AtomicBool,
 }
 
-impl Lock for Mutex {
+impl super::Lock for Lock {
     fn name() -> &'static str {
         "spin_lock"
     }
@@ -25,7 +22,7 @@ impl Lock for Mutex {
     }
 }
 
-impl Mutex {
+impl Lock {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn try_acquire(&self) -> bool {
         !self.locked.swap(true, Ordering::Acquire)

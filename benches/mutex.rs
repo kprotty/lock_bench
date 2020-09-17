@@ -11,6 +11,7 @@ use std::{
 };
 
 #[path = "./mutexes/spin.rs"] mod _spin;
+#[path = "./mutexes/os.rs"] mod _os;
 #[path = "./mutexes/std.rs"] mod _std;
 #[path = "./mutexes/parking_lot.rs"] mod _parking_lot;
 
@@ -20,9 +21,10 @@ pub fn main() {
 
     for ctx in parsed.collect() {
         ctx.with_benchmarker(work_per_ns, |b| {
-            b.bench::<_spin::Mutex>();
-            b.bench::<_std::Mutex>();
-            b.bench::<_parking_lot::Mutex>();
+            b.bench::<_spin::Lock>();
+            b.bench::<_os::Lock>();
+            b.bench::<_std::Lock>();
+            b.bench::<_parking_lot::Lock>();
         });
     }
 
