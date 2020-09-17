@@ -88,7 +88,7 @@ impl<T> Lock<T> {
     }
 
     #[inline]
-    pub fn lock_start(&self) -> Result<LockGuard<'_, T>, LockFuture<'_, T>> {
+    pub fn lock_fast(&self) -> Result<LockGuard<'_, T>, LockFuture<'_, T>> {
         match self.state.compare_exchange_weak(
             UNLOCKED,
             LOCKED,
@@ -106,7 +106,7 @@ impl<T> Lock<T> {
 
     #[inline]
     pub fn lock<P: ThreadParker>(&self) -> LockGuard<'_, T> {
-        match self.lock_start() {
+        match self.lock_fast() {
             Ok(guard) => guard,
             Err(future) => unsafe { Self::lock_slow::<P>(future) },
         }
@@ -305,7 +305,7 @@ impl<'a, T> Future for LockAsyncFuture<'a, T> {
             loop {
                 let guard = match mut_self.0 {
                     None => unreachable!("LockAsyncFuture polled after completion"),
-                    Some(AsyncState::TryLock(lock)) => match lock.lock_start() {
+                    Some(AsyncState::TryLock(lock)) => match lock.lock_fast() {
                         Ok(guard) => guard,
                         Err(future) => {
                             mut_self.0 = Some(AsyncState::PollLock(future));

@@ -4,9 +4,15 @@ version = "0.1.0"
 edition = "2018"
 authors = ["kprotty"]
 
+[features]
+default = ["std"]
+std = ["os"]
+os = []
+
 [[bench]]
 name = "mutex"
 harness = false
+test = false
 
 [dev-dependencies]
 parking_lot = "0.11"
