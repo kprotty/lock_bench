@@ -1,6 +1,8 @@
 use std::{
     fmt,
     ops::Div,
+    str::Chars,
+    iter::Peekable,
     cell::UnsafeCell,
     mem::MaybeUninit,
     convert::TryInto,
@@ -8,8 +10,9 @@ use std::{
     sync::{Arc, Barrier, atomic::{AtomicBool, Ordering}},
 };
 
-#[path = "./mutexes/spin.rs"]
-mod spin;
+#[path = "./mutexes/spin.rs"] mod _spin;
+#[path = "./mutexes/std.rs"] mod _std;
+#[path = "./mutexes/parking_lot.rs"] mod _parking_lot;
 
 pub fn main() {
     let work_per_ns = WorkUnit::work_per_ns();
@@ -17,7 +20,9 @@ pub fn main() {
 
     for ctx in parsed.collect() {
         ctx.with_benchmarker(work_per_ns, |b| {
-            b.bench::<spin::SpinLock>();
+            b.bench::<_spin::Mutex>();
+            b.bench::<_std::Mutex>();
+            b.bench::<_parking_lot::Mutex>();
         });
     }
 }
@@ -30,7 +35,51 @@ pub trait Lock: Sync + Sized {
     fn with<F: FnOnce()>(&self, f: F);
 }
 
-#[derive(Default)]
+#[derive(Debug, Copy, Clone)]
+enum ParseUnit {
+    Nanos,
+    Micros,
+    Millis,
+    Secs,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct ParseValue {
+    value: u128,
+    unit: Option<ParseUnit>,
+}
+
+impl Into<usize> for ParseValue {
+    fn into(self) -> usize {
+        if self.unit.is_some() {
+            unreachable!("expected usize, found time value")
+        } else if let Ok(value) = self.value.try_into() {
+            value
+        } else {
+            unreachable!("invalid usize value")
+        }
+    }
+}
+
+impl Into<Duration> for ParseValue {
+    fn into(self) -> Duration {
+        match self.unit {
+            Some(ParseUnit::Nanos) => Duration::from_nanos(self.value.try_into().unwrap()),
+            Some(ParseUnit::Micros) => Duration::from_micros(self.value.try_into().unwrap()),
+            Some(ParseUnit::Millis) => Duration::from_millis(self.value.try_into().unwrap()),
+            Some(ParseUnit::Secs) => Duration::from_secs(self.value.try_into().unwrap()),
+            _ => unreachable!("invalid time value"),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum ParseItem {
+    Range(ParseValue, ParseValue),
+    Value(ParseValue),
+}
+
+#[derive(Default, Debug)]
 struct Parser {
     threads: Vec<usize>,
     locked: Vec<WorkUnit>,
@@ -43,10 +92,10 @@ impl Parser {
         let Self { threads, locked, unlocked, measure } = self;
         let mut contexes = Vec::new();
 
-        for threads in threads.into_iter() {
-            for locked in locked.into_iter() {
-                for unlocked in unlocked.into_iter() {
-                    for measure in measure.into_iter() {
+        for threads in threads {
+            for &locked in locked.iter() {
+                for &unlocked in unlocked.iter() {
+                    for &measure in measure.iter() {
                         contexes.push(Context {
                             num_threads: threads,
                             work_inside: locked,
@@ -66,7 +115,7 @@ impl Parser {
         println!("where:");
 
         println!();
-        println!(" [measure]: [time]\t\\\\ Time spent measuring for each mutex benchmark");
+        println!(" [measure]: [csv-ranged:time]\t\\\\ List of time spent measuring for each mutex benchmark");
         println!(" [threads]: [csv-ranged:count]\t\\\\ List of thread counts for each benchmark");
         println!(" [locked]: [csv-ranged:time]\t\\\\ List of time spent inside the lock for each benchmark");
         println!(" [unlocked]: [csv-ranged:time]\t\\\\ List of time spent outside the lock for each benchmark");
@@ -75,11 +124,88 @@ impl Parser {
         println!(" [count]: {{usize}}");
         println!(" [time]: {{u128}}[time_unit]");
         println!(" [time_unit]: \"ns\" | \"us\" | \"ms\" | \"s\"");
-        println!(" ");
-
+       
+        println!();
         println!(" [csv_ranged:{{rule}}]: {{rule}}");
-        println!("   | {{rule}} \"-\" {{rule}} \t\\\\ randomized value in range");
+        println!("   | {{rule}} \"-\" {{rule}} \t\t\t\t\t\\\\ randomized value in range");
         println!("   | [csv_ranged:{{rule}}] \",\" [csv_ranged:{{rule}}] \t\\\\ multiple permutations");
+        println!();
+    }
+    
+    fn error(message: &'static str) -> ! {
+        eprintln!("Error: {:?}\n", message);
+        Self::print_help(std::env::args().next().unwrap());
+        std::process::exit(1)
+    }
+
+    fn parse_value(chars: &mut Peekable<Chars<'_>>) -> ParseValue {
+        let mut value = None;
+        while let Some(&chr) = chars.peek() {
+            if let Some(digit) = chr.to_digit(10) {
+                let _ = chars.next();
+                let d = digit as u128;
+                value = Some(value.map(|v| (v * 10) + d).unwrap_or(d));
+
+            } else {
+                break;
+            }
+        }
+
+        ParseValue {
+            value: value.unwrap_or_else(|| Self::error("invalid argument value")),
+            unit: match chars.peek().map(|c| *c) {
+                Some(d) if matches!(d, 'n'|'u'|'m'|'s') => {
+                    if chars.next().unwrap() == 's' {
+                        Some(ParseUnit::Secs)
+                    } else if chars.next() == Some('s') {
+                        Some(match d {
+                            'n' => ParseUnit::Nanos,
+                            'u' => ParseUnit::Micros,
+                            'm' => ParseUnit::Millis,
+                            _ => unreachable!(),
+                        })
+                    } else {
+                        Self::error("invalid timer value")
+                    }
+                },
+                _ => None,
+            },
+        }
+    }
+
+    fn parse_arg<T>(
+        results: &mut Vec<T>,
+        input: Option<String>,
+        gen_result: impl Fn(&mut Vec<T>, ParseItem),
+    ) {
+        let input = input.unwrap_or_else(|| Self::error("invalid argument"));
+        let mut chars = input.chars().peekable();
+        loop {
+            let start = Self::parse_value(&mut chars);
+            let mut end = None;
+
+            if let Some(&'-') = chars.peek() {
+                let _ = chars.next();
+                end = Some(Self::parse_value(&mut chars));
+            }
+
+            gen_result(results, match end {
+                Some(end) => {
+                    if Duration::from(start.into()) <= Duration::from(end.into()) {
+                        ParseItem::Range(start, end)
+                    } else {
+                        Self::error("invalid time value range")
+                    }
+                },
+                None => ParseItem::Value(start),
+            });
+
+            match chars.next() {
+                None => break,
+                Some(',') => continue,
+                Some(_) => unreachable!("invalid argument continuation"),
+            }
+        }
     }
 
     fn parse() -> Option<Self> {
@@ -92,73 +218,33 @@ impl Parser {
                 Self::print_help(exe);
                 return None;
             }
+                
+            Self::parse_arg(&mut parsed.measure, args.next(), |results, item| match item {
+                ParseItem::Range(_, _) => unreachable!("measure time does not support ranges"),
+                ParseItem::Value(value) => results.push(value.into()), 
+            });
 
-            fn parse_num(input: &mut &str) -> u128 {
-                let mut result: Option<u128> = None;
-                while let Some(c) = (*input).chars().nth(0) {
-                    if let Some(d) = c.to_digit(10) {
-                        let d = d as u128;
-                        result = Some(result.map(|r| (r * 10) + d).unwrap_or(d));
-                        *input = &(*input)[1..];
-                    } else {
-                        break;
-                    }
-                }
-                result.expect("invalid argument value")
-            }
-
-            let parse_usize = |input| -> usize {
-                parse_num(input).try_into().unwrap()
-            };
-
-            let parse_time = |input| {
-                let amount = parse_num(input);
-                let (advance, duration) = match &(*input)[0..2] {
-                    "s" => (1, Duration::from_secs(amount.try_into().unwrap())),
-                    "ms" => (2, Duration::from_millis(amount.try_into().unwrap())),
-                    "us" => (2, Duration::from_micros(amount.try_into().unwrap())),
-                    "ns" => (2, Duration::from_nanos(amount.try_into().unwrap())),
-                    _ => unreachable!("invalid time unit"),
+            Self::parse_arg(&mut parsed.threads, args.next(), |results, item| {
+                let (start, end): (usize, usize) = match item {
+                    ParseItem::Range(start, end) => (start.into(), end.into()),
+                    ParseItem::Value(value) => {
+                        let num_threads = value.into();
+                        (num_threads, num_threads)
+                    },
                 };
-                *input = &(*input)[advance..];
-                duration
-            };
+                (start .. (end + 1)).for_each(|thread| results.push(thread));
+            });
 
-            fn parse_arg<'a, 'b, 'c: 'b, I, T>(
-                items: &'a mut Vec<I>,
-                arg: Option<String>,
-                to_item: impl Fn(T, Option<T>) -> I,
-                parse_item_type: impl Fn(&'b mut &'c str) -> T,
-            ) {
-                let arg = arg.expect("invalid argument");
-                let mut input = arg.as_str();
-
-                while input.len() > 0 {
-                    let first = parse_item_type(&mut input);
-                    let mut second = None;
-
-                    if input.chars().nth(0) == Some('-') {
-                        input = &input[1..];
-                        second = Some(parse_item_type(&mut input));
-                    }
-
-                    items.push(to_item(first, second));
-                    if input.chars().nth(0) == Some(',') {
-                        input = &input[1..];
-                    } else {
-                        break;
-                    }
-                }
+            fn read_work_unit(results: &mut Vec<WorkUnit>, item: ParseItem) {
+                let (from, to) = match item {
+                    ParseItem::Range(start, end) => (start.into(), Some(end.into())),
+                    ParseItem::Value(value) => (value.into(), None),
+                };
+                results.push(WorkUnit { from, to });
             }
 
-            fn to_work_unit(from: Duration, to: Option<Duration>) -> WorkUnit {
-                WorkUnit { from, to }
-            }
-
-            parse_arg(&mut parsed.measure, args.next(), |a, _| a, parse_time);
-            parse_arg(&mut parsed.threads, args.next(), |a, _| a, parse_usize);
-            parse_arg(&mut parsed.locked, args.next(), to_work_unit, parse_time);
-            parse_arg(&mut parsed.unlocked, args.next(), to_work_unit, parse_time);
+            Self::parse_arg(&mut parsed.locked, args.next(), read_work_unit);
+            Self::parse_arg(&mut parsed.unlocked, args.next(), read_work_unit);
         }
 
         if parsed.measure.is_empty() {
@@ -200,15 +286,16 @@ impl Context {
             ctx: self,
             work_per_ns,
         };
-
+        
+        println!();
         println!(
-            "threads={} locked={:?} unlocked={:?}",
+            "{{ threads: {}, locked: {:?}, unlocked: {:?} }}",
             self.num_threads,
             self.work_inside,
             self.work_outside,
         );
 
-        println!("{:?}", "-".repeat(20));
+        println!("------------------------------------------------------------");
         println!("{:?}", BenchmarkResult {
             name: "lock name".to_string(),
             mean: "avg. locks/s".to_string(),
@@ -235,81 +322,81 @@ struct Mutex<L: Lock> {
 unsafe impl<L: Lock> Send for Mutex<L> {}
 
 impl<'a> Benchmarker<'a> {
-    fn bench<L: Lock>(&self) {
-        unsafe {
-            let mutex = Arc::new(Mutex {
-                _padding1: MaybeUninit::uninit(),
-                lock: L::new(),
-                _padding2: MaybeUninit::uninit(),
-            });
-            
-            let num_threads = self.ctx.num_threads;
-            let work_inside = self.ctx.work_inside.scaled(self.work_per_ns);
-            let work_outside = self.ctx.work_outside.scaled(self.work_per_ns);
-            let run_context = Arc::new((Barrier::new(num_threads + 1), AtomicBool::new(true)));
+    fn bench<L: Lock + Send + Sync + 'static>(&self) {
+        let mutex = Arc::new(Mutex {
+            _padding1: MaybeUninit::uninit(),
+            lock: L::new(),
+            _padding2: MaybeUninit::uninit(),
+        });
+        
+        let num_threads = self.ctx.num_threads;
+        let work_inside = self.ctx.work_inside.scaled(self.work_per_ns);
+        let work_outside = self.ctx.work_outside.scaled(self.work_per_ns);
+        let run_context = Arc::new((Barrier::new(num_threads + 1), AtomicBool::new(true)));
 
-            let threads = (0..num_threads)
-                .map(|_| {
-                    let mutex = mutex.clone();
-                    let run_context = run_context.clone();
+        let threads = (0..num_threads)
+            .map(|_| {
+                let mutex = mutex.clone();
+                let run_context = run_context.clone();
 
-                    std::thread::spawn(move || {
-                        let mutex = mutex;
-                        let mut iterations = 0usize;
-                        let mut prng = {
-                            let stack = 0usize;
-                            let ptr = &stack as *const _ as usize;
-                            ptr.wrapping_mul(31) as u64
-                        };
+                std::thread::spawn(move || {
+                    let mut iterations = 0usize;
+                    let mut prng = {
+                        let stack = 0usize;
+                        let ptr = &stack as *const _ as usize;
+                        ptr.wrapping_mul(31) as u64
+                    };
 
-                        run_context.0.wait();
-                        while run_context.1.load(Ordering::SeqCst) {
-                            let inside = work_inside.count(&mut prng);
+                    run_context.0.wait();
+                    while run_context.1.load(Ordering::SeqCst) {
+                        let inside = work_inside.count(&mut prng);
+                        mutex.lock.with(|| WorkUnit::run(inside));
+                        iterations += 1;
+
+                        if !run_context.1.load(Ordering::SeqCst) {
+                            break;
+                        } else {
                             let outside = work_outside.count(&mut prng);
-                            
-                            mutex.lock.with(|| WorkUnit::run(inside));
-                            iterations += 1;
-
-                            if !run_context.1.load(Ordering::SeqCst) {
-                                break;
-                            } else {
-                                WorkUnit::run(outside);
-                            }
+                            WorkUnit::run(outside);
                         }
+                    }
 
-                        iterations
-                    })
+                    iterations
                 })
-                .collect::<Vec<_>>();
+            })
+            .collect::<Vec<_>>();
 
-            run_context.0.wait();
-            std::thread::sleep(self.ctx.measure_time);
-            run_context.1.store(false, Ordering::SeqCst);
+        run_context.0.wait();
+        std::thread::sleep(self.ctx.measure_time);
+        run_context.1.store(false, Ordering::SeqCst);
 
-            let results = threads
-                .into_iter()
-                .map(|t| t.join().unwrap());
+        let results = threads
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .collect::<Vec<_>>();
 
-            let mean = results
-                .fold(0f64, |mean, iters| mean + (iters as f64))
-                .div(results.len() as f64);
+        let mean = results
+            .iter()
+            .fold(0f64, |mean, &iters| mean + (iters as f64))
+            .div(results.len() as f64);
 
-            let mut stdev = results.fold(0f64, |stdev, iters| {
+        let mut stdev = results
+            .iter()
+            .fold(0f64, |stdev, &iters| {
                 let r = (iters as f64) - mean;
                 stdev + (r * r)
             });
 
-            if results.len() > 1 {
-                stdev /= (results.len() - 1) as f64;
-                stdev = stdev.sqrt();
-            }
-
-            println!("{:?}", BenchmarkResult {
-                name: L::name().to_string(),
-                mean: mean.to_string(),
-                stdev: stdev.to_string(),
-            });
+        if results.len() > 1 {
+            stdev /= (results.len() - 1) as f64;
+            stdev = stdev.sqrt();
         }
+
+        println!("{:?}", BenchmarkResult {
+            name: L::name().to_string(),
+            mean: mean.floor().to_string(),
+            stdev: stdev.floor().to_string(),
+        });
     }
 }
 
@@ -323,7 +410,7 @@ impl fmt::Debug for BenchmarkResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{:20} | {:12} | {:12}",
+            "{:<18} | {:>15} | {:>20}",
             self.name,
             self.mean,
             self.stdev,
@@ -331,6 +418,7 @@ impl fmt::Debug for BenchmarkResult {
     }
 }
 
+#[derive(Copy, Clone)]
 struct WorkUnit {
     from: Duration,
     to: Option<Duration>,
@@ -416,10 +504,9 @@ impl WorkUnit {
 
 impl fmt::Debug for WorkUnit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.from)?;
-        if let Some(to) = self.to {
-            write!(f, "{:?}", to)?;
+        match self.to {
+            Some(to) => write!(f, "rand({:?}, {:?})", self.from, to),
+            None => write!(f, "{:?}", self.from),
         }
-        Ok(())
     }
 }

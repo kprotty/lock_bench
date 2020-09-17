@@ -3,11 +3,29 @@ use std::{
     sync::atomic::{AtomicBool, Ordering, spin_loop_hint},
 };
 
-pub struct SpinLock {
+pub struct Mutex {
     locked: AtomicBool,
 }
 
-impl SpinLock {
+impl Lock for Mutex {
+    fn name() -> &'static str {
+        "spin_lock"
+    }
+
+    fn new() -> Self {
+        Self {
+            locked: AtomicBool::new(false)
+        }
+    }
+
+    fn with<F: FnOnce()>(&self, f: F) {
+        self.acquire();
+        let _ = f();
+        self.release();
+    }
+}
+
+impl Mutex {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn try_acquire(&self) -> bool {
         !self.locked.swap(true, Ordering::Acquire)
@@ -28,23 +46,5 @@ impl SpinLock {
 
     fn release(&self) {
         self.locked.store(false, Ordering::Release);
-    }
-}
-
-impl Lock for SpinLock {
-    fn name() -> &'static str {
-        "spin_lock"
-    }
-
-    fn new() -> Self {
-        Self {
-            locked: AtomicBool::new(false)
-        }
-    }
-
-    fn with<F: FnOnce()>(&self, f: F) {
-        self.acquire();
-        let _ = f();
-        self.release();
     }
 }
