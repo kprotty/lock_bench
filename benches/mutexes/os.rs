@@ -1,4 +1,3 @@
-
 pub struct Lock {
     inner: os::Lock,
 }
@@ -55,7 +54,7 @@ mod os {
 
 #[cfg(unix)]
 mod os {
-    use std::{mem::MaybeUninit, cell::UnsafeCell};
+    use std::{cell::UnsafeCell, mem::MaybeUninit};
 
     pub struct Lock(Box<UnsafeCell<pthread_mutex_t>>);
 

@@ -9,7 +9,7 @@ impl super::Lock for Lock {
 
     fn new() -> Self {
         Self {
-            inner: parking_lot::Mutex::new(())
+            inner: parking_lot::Mutex::new(()),
         }
     }
 

@@ -9,7 +9,7 @@ impl super::Lock for Lock {
 
     fn new() -> Self {
         Self {
-            inner: std::sync::Mutex::new(())
+            inner: std::sync::Mutex::new(()),
         }
     }
 

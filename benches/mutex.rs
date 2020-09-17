@@ -1,22 +1,19 @@
 use std::{
+    cell::UnsafeCell,
+    convert::TryInto,
     fmt,
+    iter::Peekable,
+    mem::MaybeUninit,
     ops::Div,
     str::Chars,
-    iter::Peekable,
-    cell::UnsafeCell,
-    mem::MaybeUninit,
-    convert::TryInto,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Barrier,
+    },
     time::{Duration, Instant},
-    sync::{Arc, Barrier, atomic::{AtomicBool, Ordering}},
 };
 
-#[cfg(any(windows, unix))]
-#[path = "./mutexes/os.rs"]
-mod _os;
-
-#[path = "./mutexes/spin.rs"] mod _spin;
-#[path = "./mutexes/std.rs"] mod _std;
-#[path = "./mutexes/parking_lot.rs"] mod _parking_lot;
+mod mutexes;
 
 pub fn main() {
     let work_per_ns = WorkUnit::work_per_ns();
@@ -24,10 +21,11 @@ pub fn main() {
 
     for ctx in parsed.collect() {
         ctx.with_benchmarker(work_per_ns, |b| {
-            #[cfg(any(windows, unix))] b.bench::<_os::Lock>();
-            b.bench::<_spin::Lock>();
-            b.bench::<_std::Lock>();
-            b.bench::<_parking_lot::Lock>();
+            #[cfg(any(windows, unix))]
+            b.bench::<mutexes::os::Lock>();
+            b.bench::<mutexes::spin::Lock>();
+            b.bench::<mutexes::std::Lock>();
+            b.bench::<mutexes::parking_lot::Lock>();
         });
     }
 
@@ -96,7 +94,12 @@ struct Parser {
 
 impl Parser {
     fn collect(self) -> Vec<Context> {
-        let Self { threads, locked, unlocked, measure } = self;
+        let Self {
+            threads,
+            locked,
+            unlocked,
+            measure,
+        } = self;
         let mut contexes = Vec::new();
 
         for threads in threads {
@@ -113,7 +116,7 @@ impl Parser {
                 }
             }
         }
-        
+
         contexes
     }
 
@@ -126,19 +129,21 @@ impl Parser {
         println!(" [threads]: [csv-ranged:count]\t\\\\ List of thread counts for each benchmark");
         println!(" [locked]: [csv-ranged:time]\t\\\\ List of time spent inside the lock for each benchmark");
         println!(" [unlocked]: [csv-ranged:time]\t\\\\ List of time spent outside the lock for each benchmark");
-        
+
         println!();
         println!(" [count]: {{usize}}");
         println!(" [time]: {{u128}}[time_unit]");
         println!(" [time_unit]: \"ns\" | \"us\" | \"ms\" | \"s\"");
-       
+
         println!();
         println!(" [csv_ranged:{{rule}}]: {{rule}}");
         println!("   | {{rule}} \"-\" {{rule}} \t\t\t\t\t\\\\ randomized value in range");
-        println!("   | [csv_ranged:{{rule}}] \",\" [csv_ranged:{{rule}}] \t\\\\ multiple permutations");
+        println!(
+            "   | [csv_ranged:{{rule}}] \",\" [csv_ranged:{{rule}}] \t\\\\ multiple permutations"
+        );
         println!();
     }
-    
+
     fn error(message: &'static str) -> ! {
         eprintln!("Error: {:?}\n", message);
         Self::print_help(std::env::args().next().unwrap());
@@ -152,7 +157,6 @@ impl Parser {
                 let _ = chars.next();
                 let d = digit as u128;
                 value = Some(value.map(|v| (v * 10) + d).unwrap_or(d));
-
             } else {
                 break;
             }
@@ -161,7 +165,7 @@ impl Parser {
         ParseValue {
             value: value.unwrap_or_else(|| Self::error("invalid argument value")),
             unit: match chars.peek().map(|c| *c) {
-                Some(d) if matches!(d, 'n'|'u'|'m'|'s') => {
+                Some(d) if matches!(d, 'n' | 'u' | 'm' | 's') => {
                     if chars.next().unwrap() == 's' {
                         Some(ParseUnit::Secs)
                     } else if chars.next() == Some('s') {
@@ -174,7 +178,7 @@ impl Parser {
                     } else {
                         Self::error("invalid timer value")
                     }
-                },
+                }
                 _ => None,
             },
         }
@@ -190,16 +194,19 @@ impl Parser {
         loop {
             let start = Self::parse_value(&mut chars);
             let mut end = None;
-            
+
             if let Some(&'-') = chars.peek() {
                 let _ = chars.next();
                 end = Some(Self::parse_value(&mut chars));
             }
 
-            gen_result(results, match end {
-                Some(end) => ParseItem::Range(start, end),
-                None => ParseItem::Value(start),
-            });
+            gen_result(
+                results,
+                match end {
+                    Some(end) => ParseItem::Range(start, end),
+                    None => ParseItem::Value(start),
+                },
+            );
 
             match chars.next() {
                 None => break,
@@ -219,11 +226,15 @@ impl Parser {
                 Self::print_help(exe);
                 return None;
             }
-                
-            Self::parse_arg(&mut parsed.measure, args.next(), |results, item| match item {
-                ParseItem::Range(_, _) => unreachable!("measure time does not support ranges"),
-                ParseItem::Value(value) => results.push(value.into()), 
-            });
+
+            Self::parse_arg(
+                &mut parsed.measure,
+                args.next(),
+                |results, item| match item {
+                    ParseItem::Range(_, _) => unreachable!("measure time does not support ranges"),
+                    ParseItem::Value(value) => results.push(value.into()),
+                },
+            );
 
             Self::parse_arg(&mut parsed.threads, args.next(), |results, item| {
                 let (start, end): (usize, usize) = match item {
@@ -231,9 +242,9 @@ impl Parser {
                     ParseItem::Value(value) => {
                         let num_threads = value.into();
                         (num_threads, num_threads)
-                    },
+                    }
                 };
-                (start .. (end + 1)).for_each(|thread| results.push(thread));
+                (start..(end + 1)).for_each(|thread| results.push(thread));
             });
 
             fn read_work_unit(results: &mut Vec<WorkUnit>, item: ParseItem) {
@@ -292,23 +303,23 @@ impl Context {
             ctx: self,
             work_per_ns,
         };
-        
+
         println!();
         println!(
             "measure={:?} threads={:?} locked={:?} unlocked={:?}",
-            self.measure_time,
-            self.num_threads,
-            self.work_inside,
-            self.work_outside,
+            self.measure_time, self.num_threads, self.work_inside, self.work_outside,
         );
 
         println!("------------------------------------------------------------");
-        println!("{:?}", BenchmarkResult {
-            name: "name".to_string(),
-            mean: "average".to_string(),
-            median: "median".to_string(),
-            stdev: "std. dev.".to_string(),
-        });
+        println!(
+            "{:?}",
+            BenchmarkResult {
+                name: "name".to_string(),
+                mean: "average".to_string(),
+                median: "median".to_string(),
+                stdev: "std. dev.".to_string(),
+            }
+        );
 
         f(&benchmarker);
     }
@@ -335,7 +346,7 @@ impl<'a> Benchmarker<'a> {
             lock: L::new(),
             _padding2: MaybeUninit::uninit(),
         });
-        
+
         let num_threads = self.ctx.num_threads;
         let work_inside = self.ctx.work_inside.scaled(self.work_per_ns);
         let work_outside = self.ctx.work_outside.scaled(self.work_per_ns);
@@ -387,24 +398,25 @@ impl<'a> Benchmarker<'a> {
             .fold(0f64, |mean, &iters| mean + (iters as f64))
             .div(results.len() as f64);
 
-        let mut stdev = results
-            .iter()
-            .fold(0f64, |stdev, &iters| {
-                let r = (iters as f64) - mean;
-                stdev + (r * r)
-            });
+        let mut stdev = results.iter().fold(0f64, |stdev, &iters| {
+            let r = (iters as f64) - mean;
+            stdev + (r * r)
+        });
 
         if results.len() > 1 {
             stdev /= (results.len() - 1) as f64;
             stdev = stdev.sqrt();
         }
 
-        println!("{:?}", BenchmarkResult {
-            name: L::name().to_string(),
-            mean: mean.floor().to_string(),
-            median: results[results.len() / 2].to_string(),
-            stdev: stdev.floor().to_string(),
-        });
+        println!(
+            "{:?}",
+            BenchmarkResult {
+                name: L::name().to_string(),
+                mean: mean.floor().to_string(),
+                median: results[results.len() / 2].to_string(),
+                stdev: stdev.floor().to_string(),
+            }
+        );
     }
 }
 
@@ -420,10 +432,7 @@ impl fmt::Debug for BenchmarkResult {
         write!(
             f,
             "{:<18} | {:>12} | {:>11} | {:>10}",
-            self.name,
-            self.mean,
-            self.median,
-            self.stdev,
+            self.name, self.mean, self.median, self.stdev,
         )
     }
 }

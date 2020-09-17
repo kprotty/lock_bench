@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering, spin_loop_hint};
+use std::sync::atomic::{spin_loop_hint, AtomicBool, Ordering};
 
 pub struct Lock {
     locked: AtomicBool,
@@ -11,7 +11,7 @@ impl super::Lock for Lock {
 
     fn new() -> Self {
         Self {
-            locked: AtomicBool::new(false)
+            locked: AtomicBool::new(false),
         }
     }
 
