@@ -63,6 +63,4 @@ mod if_std {
 pub use if_os::*;
 
 #[cfg(feature = "os")]
-mod if_os {
-
-}
+mod if_os {}

@@ -6,4 +6,4 @@ pub mod os;
 pub mod parking_lot;
 pub mod spin;
 pub mod std;
-pub mod ulock_core;
+pub mod usync_core;
