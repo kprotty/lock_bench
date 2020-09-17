@@ -183,20 +183,14 @@ impl Parser {
         loop {
             let start = Self::parse_value(&mut chars);
             let mut end = None;
-
+            
             if let Some(&'-') = chars.peek() {
                 let _ = chars.next();
                 end = Some(Self::parse_value(&mut chars));
             }
 
             gen_result(results, match end {
-                Some(end) => {
-                    if Duration::from(start.into()) <= Duration::from(end.into()) {
-                        ParseItem::Range(start, end)
-                    } else {
-                        Self::error("invalid time value range")
-                    }
-                },
+                Some(end) => ParseItem::Range(start, end),
                 None => ParseItem::Value(start),
             });
 
@@ -240,7 +234,12 @@ impl Parser {
                     ParseItem::Range(start, end) => (start.into(), Some(end.into())),
                     ParseItem::Value(value) => (value.into(), None),
                 };
-                results.push(WorkUnit { from, to });
+                if let Some(to) = to {
+                    if from >= to {
+                        Parser::error("invalid time range value");
+                    }
+                }
+                results.push(WorkUnit { from, to })
             }
 
             Self::parse_arg(&mut parsed.locked, args.next(), read_work_unit);
@@ -289,7 +288,8 @@ impl Context {
         
         println!();
         println!(
-            "{{ threads: {}, locked: {:?}, unlocked: {:?} }}",
+            "measure={:?} threads={:?} locked={:?} unlocked={:?}",
+            self.measure_time,
             self.num_threads,
             self.work_inside,
             self.work_outside,
@@ -297,9 +297,10 @@ impl Context {
 
         println!("------------------------------------------------------------");
         println!("{:?}", BenchmarkResult {
-            name: "lock name".to_string(),
-            mean: "avg. locks/s".to_string(),
-            stdev: "stdev. locks/thread".to_string(),
+            name: "name".to_string(),
+            mean: "average".to_string(),
+            median: "median".to_string(),
+            stdev: "std. dev.".to_string(),
         });
 
         f(&benchmarker);
@@ -395,6 +396,7 @@ impl<'a> Benchmarker<'a> {
         println!("{:?}", BenchmarkResult {
             name: L::name().to_string(),
             mean: mean.floor().to_string(),
+            median: results[results.len() / 2].to_string(),
             stdev: stdev.floor().to_string(),
         });
     }
@@ -403,6 +405,7 @@ impl<'a> Benchmarker<'a> {
 struct BenchmarkResult {
     name: String,
     mean: String,
+    median: String,
     stdev: String,
 }
 
@@ -410,9 +413,10 @@ impl fmt::Debug for BenchmarkResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{:<18} | {:>15} | {:>20}",
+            "{:<18} | {:>12} | {:>11} | {:>10}",
             self.name,
             self.mean,
+            self.median,
             self.stdev,
         )
     }
