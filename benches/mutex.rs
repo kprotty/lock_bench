@@ -25,6 +25,8 @@ pub fn main() {
             b.bench::<_parking_lot::Mutex>();
         });
     }
+
+    println!();
 }
 
 pub trait Lock: Sync + Sized {
@@ -106,7 +108,7 @@ impl Parser {
                 }
             }
         }
-
+        
         contexes
     }
 
@@ -304,7 +306,6 @@ impl Context {
         });
 
         f(&benchmarker);
-        println!();
     }
 }
 
