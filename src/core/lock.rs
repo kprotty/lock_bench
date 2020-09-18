@@ -8,7 +8,7 @@ use core::{
     ops::{Deref, DerefMut},
     pin::Pin,
     ptr::{drop_in_place, read, write, NonNull},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, AtomicU8, Ordering, spin_loop_hint},
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
 };
 
@@ -51,15 +51,15 @@ impl<T> AsMut<T> for Lock<T> {
 unsafe impl<T: Send> Send for Lock<T> {}
 unsafe impl<T: Send> Sync for Lock<T> {}
 
-const UNLOCKED: usize = 0;
-const LOCKED: usize = 1 << 0;
-const WAKING: usize = 1 << 1;
-const WAITING: usize = !(LOCKED | WAKING);
+const UNLOCKED: u8 = 0;
+const LOCKED: u8 = 1 << 0;
+const WAKING: usize = 1 << 8;
+const WAITING: usize = !(LOCKED as usize | WAKING);
 
 impl<T> Lock<T> {
     pub const fn new(value: T) -> Self {
         Self {
-            state: AtomicUsize::new(UNLOCKED),
+            state: AtomicUsize::new(UNLOCKED as usize),
             value: UnsafeCell::new(value),
         }
     }
@@ -69,35 +69,21 @@ impl<T> Lock<T> {
     }
 
     #[inline]
+    fn byte_state(&self) -> &AtomicU8 {
+        unsafe { &*(&self.state as *const _ as *const _) }
+    }
+
+    #[inline]
     pub fn try_lock(&self) -> Option<LockGuard<'_, T>> {
-        let mut state = self.state.load(Ordering::Relaxed);
-        loop {
-            if state & LOCKED != 0 {
-                return None;
-            }
-            match self.state.compare_exchange_weak(
-                state,
-                state | LOCKED,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => return Some(LockGuard(self)),
-                Err(e) => state = e,
-            }
+        match self.byte_state().swap(LOCKED, Ordering::Acquire) {
+            UNLOCKED => Some(LockGuard(self)),
+            _ => None,
         }
     }
 
     #[inline]
     pub fn lock_fast(&self) -> Result<LockGuard<'_, T>, LockFuture<'_, T>> {
-        match self.state.compare_exchange_weak(
-            UNLOCKED,
-            LOCKED,
-            Ordering::Acquire,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => Ok(LockGuard(self)),
-            Err(_) => Err(LockFuture::new(self)),
-        }
+        self.try_lock().ok_or_else(|| LockFuture::new(self))
     }
 
     pub fn lock_async(&self) -> LockAsyncFuture<'_, T> {
@@ -145,8 +131,11 @@ impl<T> Lock<T> {
 
     #[inline]
     pub unsafe fn unlock(&self) {
-        let state = self.state.fetch_sub(LOCKED, Ordering::Release);
-        if state != LOCKED {
+        self.byte_state()
+            .store(UNLOCKED, Ordering::Release);
+
+        let state = self.state.load(Ordering::Relaxed);
+        if state != (UNLOCKED as usize) {
             self.unlock_slow();
         }
     }
@@ -155,7 +144,7 @@ impl<T> Lock<T> {
     unsafe fn unlock_slow(&self) {
         let mut state = self.state.load(Ordering::Relaxed);
         loop {
-            if (state & WAITING == 0) || (state & (LOCKED | WAKING) != 0) {
+            if (state & WAITING == 0) || (state & (LOCKED as usize | WAKING) != 0) {
                 return;
             }
             match self.state.compare_exchange_weak(
@@ -173,7 +162,7 @@ impl<T> Lock<T> {
             let head = &*((state & WAITING) as *const Waiter);
             let tail = head.find_tail();
 
-            if state & LOCKED != 0 {
+            if state & (LOCKED as usize) != 0 {
                 match self.state.compare_exchange_weak(
                     state,
                     state & !WAKING,
@@ -192,7 +181,7 @@ impl<T> Lock<T> {
                 
             } else if let Err(e) = self.state.compare_exchange_weak(
                 state,
-                UNLOCKED,
+                UNLOCKED as usize,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
@@ -241,7 +230,7 @@ const WAKER_WAITING: usize = 1;
 const WAKER_UPDATING: usize = 2;
 const WAKER_CONSUMING: usize = 3;
 
-#[repr(align(4))]
+#[repr(align(512))]
 struct Waiter {
     prev: Cell<MaybeUninit<Option<NonNull<Self>>>>,
     next: Cell<MaybeUninit<Option<NonNull<Self>>>>,
@@ -405,12 +394,26 @@ impl<'a, T> Future for LockFuture<'a, T> {
             let mut state = lock.state.load(Ordering::Relaxed);
 
             loop {
+                if state & (LOCKED as usize) == 0 {
+                    match lock.try_lock() {
+                        Some(guard) => {
+                            if has_waker {
+                                drop_in_place(waker_ptr);
+                            }
+                            mut_self.lock = None;
+                            return Poll::Ready(guard);
+                        },
+                        _ => {
+                            spin_loop_hint();
+                            state = lock.state.load(Ordering::Relaxed);
+                            continue;
+                        },
+                    }
+                }
+
                 let mut new_state = state;
                 let head = NonNull::new((state & WAITING) as *mut Waiter);
-
-                if state & LOCKED == 0 {
-                    new_state |= LOCKED;
-                } else if head.is_none() && spin.yield_now() {
+                if head.is_none() && spin.yield_now() {
                     state = lock.state.load(Ordering::Relaxed);
                     continue;
                 } else {
@@ -431,26 +434,15 @@ impl<'a, T> Future for LockFuture<'a, T> {
                     };
                 }
 
-                if let Err(e) = lock.state.compare_exchange_weak(
+                match lock.state.compare_exchange_weak(
                     state,
                     new_state,
                     Ordering::AcqRel,
                     Ordering::Relaxed,
                 ) {
-                    state = e;
-                    continue;
+                    Ok(_) => return Poll::Pending,
+                    Err(e) => state = e,
                 }
-
-                if state & LOCKED != 0 {
-                    return Poll::Pending;
-                }
-
-                if has_waker {
-                    drop_in_place(waker_ptr);
-                }
-
-                mut_self.lock = None;
-                return Poll::Ready(LockGuard(lock));
             }
         }
     }
