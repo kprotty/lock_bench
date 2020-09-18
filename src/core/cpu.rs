@@ -5,6 +5,11 @@ use core::{
 };
 
 #[inline]
+pub fn spin_loop_hint() {
+    core::sync::atomic::spin_loop_hint()
+}
+
+#[inline]
 pub fn is_intel() -> bool {
     IsIntel::get()
 }

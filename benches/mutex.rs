@@ -21,6 +21,7 @@ pub fn main() {
 
     for ctx in parsed.collect() {
         ctx.with_benchmarker(work_per_ns, |b| {
+            b.bench::<mutexes::experiment::Lock>();
             b.bench::<mutexes::usync_core::Lock>();
             #[cfg(any(windows, unix))]
             b.bench::<mutexes::os::Lock>();

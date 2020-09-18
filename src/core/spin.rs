@@ -1,9 +1,10 @@
-use core::sync::atomic::spin_loop_hint;
+use core::num::NonZeroU8;
+use super::cpu::{is_intel, spin_loop_hint};
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Spin {
-    iter: usize,
-    max: Option<usize>,
+    iter: u8,
+    max: Option<NonZeroU8>,
 }
 
 impl Spin {
@@ -20,12 +21,12 @@ impl Spin {
 
     pub fn yield_now(&mut self) -> bool {
         let max = self.max.unwrap_or_else(|| {
-            let max = if super::is_intel() { 10 } else { 10 };
-            self.max = Some(max);
-            max 
+            let max = if is_intel() { 10 } else { 5 };
+            self.max = NonZeroU8::new(max);
+            self.max.unwrap()
         });
 
-        if self.iter > max {
+        if self.iter > max.get() {
             false
         } else {
             (0..(1 << self.iter)).for_each(|_| spin_loop_hint());
