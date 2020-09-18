@@ -1,7 +1,7 @@
-use core::{ops::Sub, time::Duration};
+use core::{ops::Add, time::Duration};
 
 pub trait ThreadParker: Sync {
-    type Instant: Copy + Clone + Sub<Duration>;
+    type Instant: Copy + Clone + PartialOrd + Add<Duration, Output = Self::Instant>;
 
     fn new() -> Self;
 
@@ -13,7 +13,7 @@ pub trait ThreadParker: Sync {
 
     fn unpark(&self);
 
-    fn nanotime(&self) -> Self::Instant;
+    fn now() -> Self::Instant;
 }
 
 #[cfg(feature = "std")]
@@ -43,7 +43,7 @@ mod if_std {
         }
 
         fn park_until(&self, instant: Self::Instant) {
-            thread::park_timeout(instant.saturating_duration_since(self.nanotime()))
+            thread::park_timeout(instant.saturating_duration_since(Self::now()))
         }
 
         fn unpark(&self) {
@@ -53,7 +53,7 @@ mod if_std {
                 .unpark()
         }
 
-        fn nanotime(&self) -> Self::Instant {
+        fn now() -> Self::Instant {
             Self::Instant::now()
         }
     }

@@ -22,7 +22,7 @@ static STATE: AtomicUsize = AtomicUsize::new(IS_UNINIT);
 
 struct IsIntel {}
 
-impl IsIntel {    
+impl IsIntel {
     #[inline]
     fn get() -> bool {
         let state = match STATE.load(Ordering::Relaxed) {
@@ -31,7 +31,7 @@ impl IsIntel {
         };
         state == IS_INTEL
     }
-    
+
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     #[cold]
     fn get_slow() -> usize {

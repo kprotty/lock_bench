@@ -1,9 +1,9 @@
 use std::{
-    thread,
     cell::Cell,
-    ptr::NonNull,
     hint::unreachable_unchecked,
-    sync::atomic::{spin_loop_hint, AtomicUsize, AtomicU8, AtomicBool, Ordering},
+    ptr::NonNull,
+    sync::atomic::{spin_loop_hint, AtomicBool, AtomicU8, AtomicUsize, Ordering},
+    thread,
 };
 
 const UNLOCKED: u8 = 0;

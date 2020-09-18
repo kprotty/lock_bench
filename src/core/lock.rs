@@ -8,7 +8,7 @@ use core::{
     ops::{Deref, DerefMut},
     pin::Pin,
     ptr::{drop_in_place, read, write, NonNull},
-    sync::atomic::{fence, AtomicUsize, AtomicU8, Ordering, spin_loop_hint},
+    sync::atomic::{fence, spin_loop_hint, AtomicU8, AtomicUsize, Ordering},
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
 };
 
@@ -136,8 +136,7 @@ impl<T> Lock<T> {
 
     #[inline]
     pub unsafe fn unlock(&self) {
-        self.byte_state()
-            .store(UNLOCKED, Ordering::Release);
+        self.byte_state().store(UNLOCKED, Ordering::Release);
 
         let state = self.state.load(Ordering::Relaxed);
         if state != (UNLOCKED as usize) {
@@ -190,7 +189,6 @@ impl<T> Lock<T> {
                 } else {
                     fence(Ordering::Release);
                 }
-                
             } else if let Err(e) = self.state.compare_exchange_weak(
                 state,
                 if racy_wake { UNLOCKED as usize } else { WAKING },
@@ -200,7 +198,7 @@ impl<T> Lock<T> {
                 state = e;
                 continue;
             }
-            
+
             let wake_state = if racy_wake { WAKER_EMPTY } else { WAKER_WAKING };
             state = tail.state.load(Ordering::Relaxed);
             loop {
@@ -419,10 +417,10 @@ impl<'a, T> Future for LockFuture<'a, T> {
                             spin_loop_hint();
                             state = lock.state.load(Ordering::Relaxed);
                             continue;
-                        },
+                        }
                     }
                 }
-                
+
                 let mut new_state = state;
                 let head = NonNull::new((state & WAITING) as *mut Waiter);
 

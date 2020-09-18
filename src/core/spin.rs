@@ -1,5 +1,5 @@
-use core::num::NonZeroU8;
 use super::cpu::{is_intel, spin_loop_hint};
+use core::num::NonZeroU8;
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Spin {
@@ -9,10 +9,7 @@ pub struct Spin {
 
 impl Spin {
     pub fn new() -> Self {
-        Self {
-            iter: 0,
-            max: None,
-        }
+        Self { iter: 0, max: None }
     }
 
     pub fn reset(&mut self) {
