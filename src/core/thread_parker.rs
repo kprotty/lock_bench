@@ -1,7 +1,7 @@
 use core::{ops::Add, time::Duration};
 
 pub trait ThreadParker: Sync {
-    type Instant: Copy + Clone + PartialOrd + Add<Duration, Output = Self::Instant>;
+    type Instant: Copy + PartialOrd + Add<Duration, Output = Self::Instant>;
 
     fn new() -> Self;
 
@@ -17,7 +17,13 @@ pub trait ThreadParker: Sync {
 }
 
 #[cfg(feature = "std")]
-pub use if_std::*;
+pub type SystemThreadParker = StdThreadParker;
+
+#[cfg(all(feature = "os", not(feature = "std")))]
+pub type SystemThreadParker = OsThreadParker;
+
+#[cfg(feature = "std")]
+pub use if_std::StdThreadParker;
 
 #[cfg(feature = "std")]
 mod if_std {

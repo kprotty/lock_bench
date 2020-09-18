@@ -23,17 +23,15 @@ struct Prng(u16);
 impl Prng {
     fn xorshift16(&mut self) -> u16 {
         self.0 ^= self.0 << 7;
-        self.0 ^= self.0 << 9;
+        self.0 ^= self.0 >> 9;
         self.0 ^= self.0 << 8;
         self.0
     }
 
-    fn gen_u64(&mut self) -> u64 {
-        let a = self.xorshift16() as u64;
-        let b = self.xorshift16() as u64;
-        let c = self.xorshift16() as u64;
-        let d = self.xorshift16() as u64;
-        (a << 48) | (b << 32) | (c << 16) | d
+    fn gen_u32(&mut self) -> u32 {
+        let a = self.xorshift16() as u32;
+        let b = self.xorshift16() as u32;
+        (a << 16) | b
     }
 }
 
@@ -53,16 +51,16 @@ enum WaitState<P: ThreadParker> {
     Notified(Notified),
 }
 
-pub struct RawMutex<P: ThreadParker, T> {
+pub struct Mutex<P: ThreadParker, T> {
     state: AtomicU8,
     prng: AtomicU16,
     queue: Lock<List<WaitState<P>>>,
     value: UnsafeCell<T>,
 }
 
-impl<P: ThreadParker, T: fmt::Debug> fmt::Debug for RawMutex<P, T> {
+impl<P: ThreadParker, T: fmt::Debug> fmt::Debug for Mutex<P, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut f = f.debug_struct("RawMutex");
+        let mut f = f.debug_struct("Mutex");
         let f = match self.try_lock() {
             Some(guard) => f.field("value", &&*guard),
             None => f.field("state", &"<locked>"),
@@ -71,32 +69,32 @@ impl<P: ThreadParker, T: fmt::Debug> fmt::Debug for RawMutex<P, T> {
     }
 }
 
-impl<P: ThreadParker, T: Default> Default for RawMutex<P, T> {
+impl<P: ThreadParker, T: Default> Default for Mutex<P, T> {
     fn default() -> Self {
         Self::from(T::default())
     }
 }
 
-impl<P: ThreadParker, T> From<T> for RawMutex<P, T> {
+impl<P: ThreadParker, T> From<T> for Mutex<P, T> {
     fn from(value: T) -> Self {
         Self::new(value)
     }
 }
 
-impl<P: ThreadParker, T> AsMut<T> for RawMutex<P, T> {
+impl<P: ThreadParker, T> AsMut<T> for Mutex<P, T> {
     fn as_mut(&mut self) -> &mut T {
         unsafe { &mut *self.value.get() }
     }
 }
 
-unsafe impl<P: ThreadParker, T: Send> Send for RawMutex<P, T> {}
-unsafe impl<P: ThreadParker, T: Send> Sync for RawMutex<P, T> {}
+unsafe impl<P: ThreadParker, T: Send> Send for Mutex<P, T> {}
+unsafe impl<P: ThreadParker, T: Send> Sync for Mutex<P, T> {}
 
 const UNLOCKED: u8 = 0;
 const LOCKED: u8 = 1 << 0;
 const PARKED: u8 = 1 << 1;
 
-impl<P: ThreadParker, T> RawMutex<P, T> {
+impl<P: ThreadParker, T> Mutex<P, T> {
     pub fn new(value: T) -> Self {
         Self {
             state: AtomicU8::new(UNLOCKED),
@@ -115,7 +113,7 @@ impl<P: ThreadParker, T> RawMutex<P, T> {
     }
 
     #[inline]
-    pub fn try_lock(&self) -> Option<RawMutexGuard<'_, P, T>> {
+    pub fn try_lock(&self) -> Option<MutexGuard<'_, P, T>> {
         let mut state = self.state.load(Ordering::Relaxed);
         loop {
             if state & LOCKED != 0 {
@@ -127,30 +125,35 @@ impl<P: ThreadParker, T> RawMutex<P, T> {
                 Ordering::Acquire,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => return Some(RawMutexGuard(self)),
+                Ok(_) => return Some(MutexGuard(self)),
                 Err(e) => state = e,
             }
         }
     }
 
     #[inline]
-    fn try_lock_fast(&self) -> Option<RawMutexGuard<'_, P, T>> {
+    fn try_lock_fast(&self) -> Option<MutexGuard<'_, P, T>> {
         self.state
             .compare_exchange_weak(UNLOCKED, LOCKED, Ordering::Acquire, Ordering::Relaxed)
             .ok()
-            .map(|_| RawMutexGuard(self))
-    }
-
-    pub fn lock_async(&self) -> RawMutexFuture<'_, P, T> {
-        RawMutexFuture {
-            waiter: UnsafeCell::new(Node::new(WaitState::Empty)),
-            mutex: MutexState::TryLock(self),
-            _pinned: PhantomPinned,
-        }
+            .map(|_| MutexGuard(self))
     }
 
     #[inline]
-    pub fn lock(&self) -> RawMutexGuard<'_, P, T> {
+    pub fn try_lock_for(&self, timeout: Duration) -> Option<MutexGuard<'_, P, T>> {
+        self.try_lock_until(P::now() + timeout)
+    }
+
+    #[inline]
+    pub fn try_lock_until(&self, deadline: P::Instant) -> Option<MutexGuard<'_, P, T>> {
+        self.lock_sync(|parker| {
+            parker.park_until(deadline);
+            P::now() < deadline
+        })
+    }
+
+    #[inline]
+    pub fn lock(&self) -> MutexGuard<'_, P, T> {
         self.lock_sync(|parker| {
             parker.park();
             true
@@ -159,7 +162,7 @@ impl<P: ThreadParker, T> RawMutex<P, T> {
     }
 
     #[inline]
-    fn lock_sync<'a>(&'a self, try_park: impl Fn(&P) -> bool) -> Option<RawMutexGuard<'a, P, T>> {
+    fn lock_sync(&self, try_park: impl Fn(&P) -> bool) -> Option<MutexGuard<'_, P, T>> {
         self.try_lock_fast()
             .or_else(|| self.lock_sync_slow(try_park))
     }
@@ -181,10 +184,7 @@ impl<P: ThreadParker, T> RawMutex<P, T> {
     }
 
     #[cold]
-    fn lock_sync_slow<'a>(
-        &'a self,
-        try_park: impl Fn(&P) -> bool,
-    ) -> Option<RawMutexGuard<'a, P, T>> {
+    fn lock_sync_slow(&self, try_park: impl Fn(&P) -> bool) -> Option<MutexGuard<'_, P, T>> {
         let parker = P::new();
         let waker = unsafe {
             let parker_ptr = &parker as *const _ as *const ();
@@ -193,7 +193,7 @@ impl<P: ThreadParker, T> RawMutex<P, T> {
         };
 
         let mut context = Context::from_waker(&waker);
-        let mut future = RawMutexFuture {
+        let mut future = MutexLockFuture {
             waiter: UnsafeCell::new(Node::new(WaitState::Empty)),
             mutex: MutexState::Locking(self),
             _pinned: PhantomPinned,
@@ -206,6 +206,14 @@ impl<P: ThreadParker, T> RawMutex<P, T> {
                 Poll::Ready(guard) => return Some(guard),
                 _ => continue,
             }
+        }
+    }
+
+    pub fn lock_async(&self) -> MutexLockFuture<'_, P, T> {
+        MutexLockFuture {
+            waiter: UnsafeCell::new(Node::new(WaitState::Empty)),
+            mutex: MutexState::TryLock(self),
+            _pinned: PhantomPinned,
         }
     }
 
@@ -269,20 +277,20 @@ impl<P: ThreadParker, T> RawMutex<P, T> {
 }
 
 enum MutexState<'a, P: ThreadParker, T> {
-    TryLock(&'a RawMutex<P, T>),
-    Locking(&'a RawMutex<P, T>),
-    Waiting(&'a RawMutex<P, T>),
+    TryLock(&'a Mutex<P, T>),
+    Locking(&'a Mutex<P, T>),
+    Waiting(&'a Mutex<P, T>),
     Locked,
 }
 
-pub struct RawMutexFuture<'a, P: ThreadParker, T> {
+pub struct MutexLockFuture<'a, P: ThreadParker, T> {
     waiter: UnsafeCell<Node<WaitState<P>>>,
     mutex: MutexState<'a, P, T>,
     _pinned: PhantomPinned,
 }
 
-impl<'a, P: ThreadParker, T> Future for RawMutexFuture<'a, P, T> {
-    type Output = RawMutexGuard<'a, P, T>;
+impl<'a, P: ThreadParker, T> Future for MutexLockFuture<'a, P, T> {
+    type Output = MutexGuard<'a, P, T>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut_self = unsafe { Pin::into_inner_unchecked(self) };
@@ -305,11 +313,11 @@ impl<'a, P: ThreadParker, T> Future for RawMutexFuture<'a, P, T> {
                 },
                 MutexState::Waiting(mutex) => match mut_self.poll_wait(ctx, mutex) {
                     None => return Poll::Pending,
-                    Some(Notified::Acquired) => break RawMutexGuard(mutex),
+                    Some(Notified::Acquired) => break MutexGuard(mutex),
                     Some(Notified::Retry) => mut_self.mutex = MutexState::Locking(mutex),
                 },
                 MutexState::Locked => {
-                    unreachable!("RawMutexFuture polled after completion");
+                    unreachable!("MutexLockFuture polled after completion");
                 }
             }
         };
@@ -319,7 +327,7 @@ impl<'a, P: ThreadParker, T> Future for RawMutexFuture<'a, P, T> {
     }
 }
 
-impl<'a, P: ThreadParker, T> Drop for RawMutexFuture<'a, P, T> {
+impl<'a, P: ThreadParker, T> Drop for MutexLockFuture<'a, P, T> {
     fn drop(&mut self) {
         match self.mutex {
             MutexState::Waiting(mutex) => self.poll_cancel(mutex),
@@ -328,12 +336,12 @@ impl<'a, P: ThreadParker, T> Drop for RawMutexFuture<'a, P, T> {
     }
 }
 
-impl<'a, P: ThreadParker, T> RawMutexFuture<'a, P, T> {
+impl<'a, P: ThreadParker, T> MutexLockFuture<'a, P, T> {
     fn poll_lock(
         &self,
         ctx: &mut Context<'_>,
-        mutex: &'a RawMutex<P, T>,
-    ) -> Option<RawMutexGuard<'a, P, T>> {
+        mutex: &'a Mutex<P, T>,
+    ) -> Option<MutexGuard<'a, P, T>> {
         let mut spin = crate::core::Spin::new();
         let mut state = mutex.state.load(Ordering::Relaxed);
         loop {
@@ -344,7 +352,7 @@ impl<'a, P: ThreadParker, T> RawMutexFuture<'a, P, T> {
                     Ordering::Acquire,
                     Ordering::Relaxed,
                 ) {
-                    Ok(_) => return Some(RawMutexGuard(mutex)),
+                    Ok(_) => return Some(MutexGuard(mutex)),
                     Err(e) => state = e,
                 }
                 continue;
@@ -377,8 +385,11 @@ impl<'a, P: ThreadParker, T> RawMutexFuture<'a, P, T> {
                         waker: ctx.waker().clone(),
                         force_fair_at: P::now()
                             + Duration::new(0, {
-                                let mut prng = Prng(mutex.prng.load(Ordering::Relaxed));
-                                let rng_state = prng.gen_u64();
+                                let mut prng = Prng(match mutex.prng.load(Ordering::Relaxed) {
+                                    0 => (((wait_state as *mut _ as usize) >> 16) & 0xffff).try_into().unwrap(),
+                                    prng_state => prng_state,
+                                });
+                                let rng_state = prng.gen_u32();
                                 mutex.prng.store(prng.0, Ordering::Relaxed);
                                 (rng_state % 1_000_000).try_into().unwrap()
                             }),
@@ -395,7 +406,7 @@ impl<'a, P: ThreadParker, T> RawMutexFuture<'a, P, T> {
         }
     }
 
-    fn poll_wait(&self, ctx: &mut Context<'_>, mutex: &'a RawMutex<P, T>) -> Option<Notified> {
+    fn poll_wait(&self, ctx: &mut Context<'_>, mutex: &'a Mutex<P, T>) -> Option<Notified> {
         mutex.with_queue(|_queue| unsafe {
             let waiter = NonNull::new_unchecked(self.waiter.get());
             let wait_state = &mut *waiter.as_ref().get();
@@ -413,7 +424,7 @@ impl<'a, P: ThreadParker, T> RawMutexFuture<'a, P, T> {
         })
     }
 
-    fn poll_cancel(&self, mutex: &'a RawMutex<P, T>) {
+    fn poll_cancel(&self, mutex: &'a Mutex<P, T>) {
         mutex.with_queue(|queue| unsafe {
             let waiter = NonNull::new_unchecked(self.waiter.get());
             let wait_state = &mut *waiter.as_ref().get();
@@ -432,27 +443,27 @@ impl<'a, P: ThreadParker, T> RawMutexFuture<'a, P, T> {
     }
 }
 
-pub struct RawMutexGuard<'a, P: ThreadParker, T>(&'a RawMutex<P, T>);
+pub struct MutexGuard<'a, P: ThreadParker, T>(&'a Mutex<P, T>);
 
-impl<'a, P: ThreadParker, T> RawMutexGuard<'a, P, T> {
+impl<'a, P: ThreadParker, T> MutexGuard<'a, P, T> {
     pub fn unlock_fair(self: Self) {
         unsafe { self.0.unlock_fair() }
     }
 }
 
-impl<'a, P: ThreadParker, T> Drop for RawMutexGuard<'a, P, T> {
+impl<'a, P: ThreadParker, T> Drop for MutexGuard<'a, P, T> {
     fn drop(&mut self) {
         unsafe { self.0.unlock() }
     }
 }
 
-impl<'a, P: ThreadParker, T: fmt::Debug> fmt::Debug for RawMutexGuard<'a, P, T> {
+impl<'a, P: ThreadParker, T: fmt::Debug> fmt::Debug for MutexGuard<'a, P, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.deref().fmt(f)
     }
 }
 
-impl<'a, P: ThreadParker, T> Deref for RawMutexGuard<'a, P, T> {
+impl<'a, P: ThreadParker, T> Deref for MutexGuard<'a, P, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -460,7 +471,7 @@ impl<'a, P: ThreadParker, T> Deref for RawMutexGuard<'a, P, T> {
     }
 }
 
-impl<'a, P: ThreadParker, T> DerefMut for RawMutexGuard<'a, P, T> {
+impl<'a, P: ThreadParker, T> DerefMut for MutexGuard<'a, P, T> {
     fn deref_mut(&mut self) -> &mut T {
         unsafe { &mut *self.0.value.get() }
     }

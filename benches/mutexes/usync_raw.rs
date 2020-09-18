@@ -1,20 +1,20 @@
 pub struct Lock {
-    inner: usync::core::Lock<()>,
+    inner: usync::Mutex<()>,
 }
 
 impl super::Lock for Lock {
     fn name() -> &'static str {
-        "usync::core::Lock"
+        "usync::Mutex"
     }
 
     fn new() -> Self {
         Self {
-            inner: usync::core::Lock::new(()),
+            inner: usync::Mutex::new(()),
         }
     }
 
     fn with<F: FnOnce()>(&self, f: F) {
-        let _guard = self.inner.lock::<usync::core::SystemThreadParker>();
+        let _guard = self.inner.lock();
         let _ = f();
     }
 }
