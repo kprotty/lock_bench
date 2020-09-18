@@ -189,6 +189,7 @@ impl<T> Lock<T> {
             if let Some(new_tail_ptr) = tail.prev.get().assume_init() {
                 head.tail.set(MaybeUninit::new(Some(new_tail_ptr)));
                 self.state.fetch_and(!WAKING, Ordering::Release);
+                
             } else if let Err(e) = self.state.compare_exchange_weak(
                 state,
                 UNLOCKED,
@@ -198,13 +199,14 @@ impl<T> Lock<T> {
                 state = e;
                 continue;
             }
-
+            
+            let wake_state = WAKER_EMPTY;
             state = tail.state.load(Ordering::Relaxed);
             loop {
                 if state == WAKER_UPDATING {
                     match tail.state.compare_exchange_weak(
                         WAKER_UPDATING,
-                        WAKER_EMPTY,
+                        wake_state,
                         Ordering::Relaxed,
                         Ordering::Relaxed,
                     ) {
@@ -226,7 +228,7 @@ impl<T> Lock<T> {
                 }
 
                 let waker = read(tail.waker_ptr());
-                tail.state.store(WAKER_EMPTY, Ordering::Release);
+                tail.state.store(wake_state, Ordering::Release);
                 waker.wake();
                 return;
             }
@@ -283,14 +285,14 @@ impl Waiter {
 
 enum AsyncState<'a, T> {
     TryLock(&'a Lock<T>),
-    PollLock(LockFuture<'a, T>),
+    Poll(LockFuture<'a, T>),
 }
 
 pub struct LockAsyncFuture<'a, T>(Option<AsyncState<'a, T>>);
 
 impl<'a, T> Drop for LockAsyncFuture<'a, T> {
     fn drop(&mut self) {
-        if matches!(self.0, Some(AsyncState::PollLock(_))) {
+        if matches!(self.0, Some(AsyncState::Poll(_))) {
             unreachable!("LockAsyncFuture does not support cancellation");
         }
     }
@@ -308,11 +310,11 @@ impl<'a, T> Future for LockAsyncFuture<'a, T> {
                     Some(AsyncState::TryLock(lock)) => match lock.lock_fast() {
                         Ok(guard) => guard,
                         Err(future) => {
-                            mut_self.0 = Some(AsyncState::PollLock(future));
+                            mut_self.0 = Some(AsyncState::Poll(future));
                             continue;
                         }
                     },
-                    Some(AsyncState::PollLock(ref mut future)) => {
+                    Some(AsyncState::Poll(ref mut future)) => {
                         match Pin::new_unchecked(future).poll(ctx) {
                             Poll::Pending => return Poll::Pending,
                             Poll::Ready(guard) => guard,
@@ -370,7 +372,7 @@ impl<'a, T> Future for LockFuture<'a, T> {
                     Ordering::Relaxed,
                 ) {
                     Err(waker_state) => match waker_state {
-                        WAKER_EMPTY => {}
+                        WAKER_EMPTY => {},
                         WAKER_CONSUMING => return Poll::Pending,
                         _ => unreachable!("invalid updated waker state"),
                     },
@@ -386,8 +388,11 @@ impl<'a, T> Future for LockFuture<'a, T> {
                         ) {
                             Ok(_) => return Poll::Pending,
                             Err(waker_state) => {
-                                assert_eq!(waker_state, WAKER_EMPTY, "invalid updated waker state");
                                 drop_in_place(waker_ptr);
+                                match waker_state {
+                                    WAKER_EMPTY => {},
+                                    _ => unreachable!("invalid updated waker state"),
+                                }
                             }
                         }
                     }

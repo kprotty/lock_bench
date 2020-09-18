@@ -23,7 +23,7 @@ enum WaiterState {
 type Waiter = WaitNode<WaiterState>;
 type WaiterQueue = WaitQueue<WaiterState>;
 
-pub struct RawMutex<T> {
+pub struct RawMutex<P, T> {
     state: AtomicUsize,
     queue: RawMutex<WaiterQueue>,
     value: UnsafeCell<T>,
