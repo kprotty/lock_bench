@@ -1,13 +1,12 @@
 [package]
-name = "usync"
+name = "ulock"
 version = "0.1.0"
 edition = "2018"
 authors = ["kprotty"]
 
 [features]
 default = ["std"]
-std = ["os"]
-os = []
+std = []
 
 [[bench]]
 name = "mutex"

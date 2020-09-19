@@ -1,20 +1,20 @@
 pub struct Lock {
-    inner: usync::core::Lock<()>,
+    inner: ulock::RawLock<()>,
 }
 
 impl super::Lock for Lock {
     fn name() -> &'static str {
-        "usync::core::Lock"
+        "ulock::Lock"
     }
 
     fn new() -> Self {
         Self {
-            inner: usync::core::Lock::new(()),
+            inner: ulock::RawLock::new(()),
         }
     }
 
     fn with<F: FnOnce()>(&self, f: F) {
-        let _guard = self.inner.lock::<usync::core::StdThreadParker>();
+        let _guard = self.inner.lock::<ulock::StdThreadParker>();
         let _ = f();
     }
 }
