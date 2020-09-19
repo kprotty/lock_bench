@@ -1,5 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
+pub mod list;
 mod lock;
 mod spin_wait;
 mod thread_parker;
