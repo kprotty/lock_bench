@@ -76,6 +76,15 @@ impl<T> List<T> {
         self.head.is_none()
     }
 
+    pub unsafe fn head(&self) -> Option<NonNull<Node<T>>> {
+        self.head
+    }
+
+    pub unsafe fn tail(&self) -> Option<NonNull<Node<T>>> {
+        self.head
+            .map(|head| head.as_ref().tail.get().unwrap())
+    }
+
     pub unsafe fn push_back(&mut self, node: NonNull<Node<T>>) {
         node.as_ref().next.set(None);
         node.as_ref().tail.set(Some(node));

@@ -1,6 +1,6 @@
 use core::{ops::Add, time::Duration};
 
-pub unsafe trait ThreadParker: Send {
+pub unsafe trait ThreadParker: Send + Sync {
     fn new() -> Self;
 
     fn prepare_park(&self);
@@ -15,42 +15,62 @@ pub unsafe trait ThreadParkerTimed: ThreadParker {
 
     fn now() -> Self::Instant;
 
-    fn park_timeout(&self, deadline: Self::Instant);
+    fn park_until(&self, deadline: Self::Instant);
 }
 
 #[cfg(feature = "std")]
-pub use if_std::StdThreadParker;
+pub(crate) mod if_std {
+    use std::{
+        sync::atomic::{AtomicBool, Ordering},
+        thread,
+    };
 
-#[cfg(feature = "std")]
-mod if_std {
-    use std::{cell::Cell, fmt, thread};
-
-    #[derive(Default)]
-    pub struct StdThreadParker(Cell<Option<thread::Thread>>);
-
-    impl fmt::Debug for StdThreadParker {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.debug_struct("ThreadParker").finish()
-        }
+    #[derive(Debug)]
+    pub struct Parker {
+        notified: AtomicBool,
+        thread: thread::Thread,
     }
 
-    unsafe impl Send for StdThreadParker {}
-
-    unsafe impl super::ThreadParker for StdThreadParker {
+    unsafe impl super::ThreadParker for Parker {
         fn new() -> Self {
-            Self(Cell::new(None))
+            Self {
+                notified: AtomicBool::new(false),
+                thread: thread::current(),
+            }
         }
 
         fn prepare_park(&self) {
-            self.0.set(Some(thread::current()))
+            self.notified.store(false, Ordering::Relaxed);
         }
 
         fn park(&self) {
-            thread::park()
+            while !self.notified.load(Ordering::Acquire) {
+                thread::park();
+            }
         }
 
         fn unpark(&self) {
-            self.0.replace(None).unwrap().unpark()
+            self.notified.store(true, Ordering::Release);
+            self.thread.unpark();
+        }
+    }
+
+    unsafe impl super::ThreadParkerTimed for Parker {
+        type Instant = std::time::Instant;
+
+        fn now() -> Self::Instant {
+            Self::Instant::now()
+        }
+
+        fn park_until(&self, deadline: Self::Instant) {
+            while !self.notified.load(Ordering::Acquire) {
+                let now = Self::now();
+                if deadline <= now {
+                    return;
+                } else {
+                    thread::park_timeout(deadline - now);
+                }
+            }
         }
     }
 }

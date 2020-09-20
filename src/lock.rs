@@ -1,4 +1,4 @@
-use super::{SpinWait, ThreadParker};
+use super::{SpinWait, ThreadParker as Parker};
 use core::{
     cell::{Cell, UnsafeCell},
     fmt,
@@ -11,35 +11,35 @@ use core::{
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
 };
 
-pub struct RawLock<T> {
+pub struct Lock<T> {
     state: AtomicUsize,
     value: UnsafeCell<T>,
 }
 
-unsafe impl<T: Send> Send for RawLock<T> {}
-unsafe impl<T: Send> Sync for RawLock<T> {}
+unsafe impl<T: Send> Send for Lock<T> {}
+unsafe impl<T: Send> Sync for Lock<T> {}
 
-impl<T: Default> Default for RawLock<T> {
+impl<T: Default> Default for Lock<T> {
     fn default() -> Self {
         Self::from(T::default())
     }
 }
 
-impl<T> From<T> for RawLock<T> {
+impl<T> From<T> for Lock<T> {
     fn from(value: T) -> Self {
         Self::new(value)
     }
 }
 
-impl<T> AsMut<T> for RawLock<T> {
+impl<T> AsMut<T> for Lock<T> {
     fn as_mut(&mut self) -> &mut T {
         unsafe { &mut *self.value.get() }
     }
 }
 
-impl<T: fmt::Debug> fmt::Debug for RawLock<T> {
+impl<T: fmt::Debug> fmt::Debug for Lock<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut f = f.debug_struct("RawLock");
+        let mut f = f.debug_struct("Lock");
         match self.try_lock() {
             Some(guard) => f.field("value", &&*guard),
             None => f.field("state", &"<locked>"),
@@ -53,7 +53,7 @@ const LOCKED: usize = 1;
 const WAKING: usize = 2;
 const WAITING: usize = !(LOCKED | WAKING);
 
-impl<T> RawLock<T> {
+impl<T> Lock<T> {
     pub const fn new(value: T) -> Self {
         Self {
             state: AtomicUsize::new(UNLOCKED),
@@ -66,7 +66,13 @@ impl<T> RawLock<T> {
     }
 
     #[inline]
-    pub fn try_lock(&self) -> Option<RawLockGuard<'_, T>> {
+    pub fn is_locked(&self) -> bool {
+        let state = self.state.load(Ordering::Relaxed);
+        state & LOCKED != 0
+    }
+
+    #[inline]
+    pub fn try_lock(&self) -> Option<LockGuard<'_, T>> {
         let mut state = self.state.load(Ordering::Relaxed);
         loop {
             if state & LOCKED != 0 {
@@ -78,30 +84,30 @@ impl<T> RawLock<T> {
                 Ordering::Acquire,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => return Some(RawLockGuard(self)),
+                Ok(_) => return Some(LockGuard(self)),
                 Err(e) => state = e,
             }
         }
     }
 
     #[inline]
-    pub fn lock<P: ThreadParker>(&self) -> RawLockGuard<'_, T> {
+    pub fn lock<P: Parker>(&self) -> LockGuard<'_, T> {
         self.lock_fast().unwrap_or_else(|| self.lock_slow::<P>())
     }
 
     #[inline]
-    fn lock_fast(&self) -> Option<RawLockGuard<'_, T>> {
+    fn lock_fast(&self) -> Option<LockGuard<'_, T>> {
         self.state
             .compare_exchange_weak(UNLOCKED, LOCKED, Ordering::Acquire, Ordering::Relaxed)
             .ok()
-            .map(|_| RawLockGuard(self))
+            .map(|_| LockGuard(self))
     }
 
     #[cold]
-    fn lock_slow<P: ThreadParker>(&self) -> RawLockGuard<'_, T> {
-        struct ParkWaker<P: ThreadParker>(PhantomData<*mut P>);
+    fn lock_slow<P: Parker>(&self) -> LockGuard<'_, T> {
+        struct ParkWaker<P: Parker>(PhantomData<*mut P>);
 
-        impl<P: ThreadParker> ParkWaker<P> {
+        impl<P: Parker> ParkWaker<P> {
             const VTABLE: RawWakerVTable = RawWakerVTable::new(
                 |ptr| unsafe {
                     (&*(ptr as *const P)).prepare_park();
@@ -121,7 +127,7 @@ impl<T> RawLock<T> {
         };
 
         let mut context = Context::from_waker(&waker);
-        let mut future = RawLockFuture::new(RawLockState::LockSlow(self));
+        let mut future = LockFuture::new(LockState::LockSlow(self));
 
         loop {
             let pinned_future = unsafe { Pin::new_unchecked(&mut future) };
@@ -133,8 +139,8 @@ impl<T> RawLock<T> {
     }
 
     #[inline]
-    pub fn lock_async(&self) -> RawLockFuture<'_, T> {
-        RawLockFuture::new(RawLockState::LockFast(self))
+    pub fn lock_async(&self) -> LockFuture<'_, T> {
+        LockFuture::new(LockState::LockFast(self))
     }
 
     #[inline]
@@ -275,56 +281,56 @@ struct Waiter {
     state: AtomicUsize,
 }
 
-enum RawLockState<'a, T> {
-    LockFast(&'a RawLock<T>),
-    LockSlow(&'a RawLock<T>),
+enum LockState<'a, T> {
+    LockFast(&'a Lock<T>),
+    LockSlow(&'a Lock<T>),
     Locked,
 }
 
-pub struct RawLockFuture<'a, T> {
+pub struct LockFuture<'a, T> {
     waiter: UnsafeCell<Waiter>,
-    state: RawLockState<'a, T>,
+    state: LockState<'a, T>,
     _pinned: PhantomPinned,
 }
 
-impl<'a, T> Drop for RawLockFuture<'a, T> {
+impl<'a, T> Drop for LockFuture<'a, T> {
     fn drop(&mut self) {
-        if let RawLockState::LockSlow(_) = self.state {
-            unreachable!("RawLockFuture does not support cancellation");
+        if let LockState::LockSlow(_) = self.state {
+            unreachable!("LockFuture does not support cancellation");
         }
     }
 }
 
-impl<'a, T> Future for RawLockFuture<'a, T> {
-    type Output = RawLockGuard<'a, T>;
+impl<'a, T> Future for LockFuture<'a, T> {
+    type Output = LockGuard<'a, T>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut_self = unsafe { Pin::get_unchecked_mut(self) };
 
         let guard = loop {
             match mut_self.state {
-                RawLockState::LockFast(lock) => match lock.lock_fast() {
+                LockState::LockFast(lock) => match lock.lock_fast() {
                     Some(guard) => break guard,
-                    None => mut_self.state = RawLockState::LockSlow(lock),
+                    None => mut_self.state = LockState::LockSlow(lock),
                 },
-                RawLockState::LockSlow(lock) => {
+                LockState::LockSlow(lock) => {
                     let waiter = unsafe { &*mut_self.waiter.get() };
                     match Self::poll_lock(ctx, lock, waiter) {
                         Poll::Ready(guard) => break guard,
                         Poll::Pending => return Poll::Pending,
                     }
                 }
-                RawLockState::Locked => unreachable!("RawLockFuture polled after completion"),
+                LockState::Locked => unreachable!("LockFuture polled after completion"),
             }
         };
 
-        mut_self.state = RawLockState::Locked;
+        mut_self.state = LockState::Locked;
         Poll::Ready(guard)
     }
 }
 
-impl<'a, T> RawLockFuture<'a, T> {
-    fn new(state: RawLockState<'a, T>) -> Self {
+impl<'a, T> LockFuture<'a, T> {
+    fn new(state: LockState<'a, T>) -> Self {
         Self {
             waiter: UnsafeCell::new(Waiter {
                 prev: Cell::new(None),
@@ -340,9 +346,9 @@ impl<'a, T> RawLockFuture<'a, T> {
 
     fn poll_lock(
         ctx: &mut Context<'_>,
-        lock: &'a RawLock<T>,
+        lock: &'a Lock<T>,
         waiter: &Waiter,
-    ) -> Poll<RawLockGuard<'a, T>> {
+    ) -> Poll<LockGuard<'a, T>> {
         let state = waiter.state.load(Ordering::Relaxed);
         match WakerState::from(state) {
             WakerState::Empty => {}
@@ -419,7 +425,7 @@ impl<'a, T> RawLockFuture<'a, T> {
                 Ordering::AcqRel,
                 Ordering::Relaxed,
             ) {
-                Ok(_) if state & LOCKED == 0 => return Poll::Ready(RawLockGuard(lock)),
+                Ok(_) if state & LOCKED == 0 => return Poll::Ready(LockGuard(lock)),
                 Ok(_) => return Poll::Pending,
                 Err(e) => state = e,
             }
@@ -427,15 +433,15 @@ impl<'a, T> RawLockFuture<'a, T> {
     }
 }
 
-pub struct RawLockGuard<'a, T>(&'a RawLock<T>);
+pub struct LockGuard<'a, T>(&'a Lock<T>);
 
-impl<'a, T> Drop for RawLockGuard<'a, T> {
+impl<'a, T> Drop for LockGuard<'a, T> {
     fn drop(&mut self) {
         unsafe { self.0.unlock() }
     }
 }
 
-impl<'a, T> Deref for RawLockGuard<'a, T> {
+impl<'a, T> Deref for LockGuard<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -443,13 +449,13 @@ impl<'a, T> Deref for RawLockGuard<'a, T> {
     }
 }
 
-impl<'a, T> DerefMut for RawLockGuard<'a, T> {
+impl<'a, T> DerefMut for LockGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut T {
         unsafe { &mut *self.0.value.get() }
     }
 }
 
-impl<'a, T: fmt::Debug> fmt::Debug for RawLockGuard<'a, T> {
+impl<'a, T: fmt::Debug> fmt::Debug for LockGuard<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (&&*self).fmt(f)
     }

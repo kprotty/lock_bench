@@ -13,7 +13,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-mod mutexes;
+#[cfg(any(windows, unix))]
+mod os_lock;
+mod std_lock;
+mod spin_lock;
+mod ulock_lock;
+mod ulock_mutex;
+mod parking_lot_lock;
 
 pub fn main() {
     let work_per_ns = WorkUnit::work_per_ns();
@@ -21,12 +27,13 @@ pub fn main() {
 
     for ctx in parsed.collect() {
         ctx.with_benchmarker(work_per_ns, |b| {
-            b.bench::<mutexes::ulock::Lock>();
+            b.bench::<ulock_mutex::Lock>();
+            b.bench::<ulock_lock::Lock>();
+            b.bench::<spin_lock::Lock>();
             #[cfg(any(windows, unix))]
-            b.bench::<mutexes::os::Lock>();
-            b.bench::<mutexes::spin::Lock>();
-            b.bench::<mutexes::std::Lock>();
-            b.bench::<mutexes::parking_lot::Lock>();
+            b.bench::<os_lock::Lock>();
+            b.bench::<std_lock::Lock>();
+            b.bench::<parking_lot_lock::Lock>();
         });
     }
 

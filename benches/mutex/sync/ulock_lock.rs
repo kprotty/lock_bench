@@ -1,5 +1,7 @@
+type RawLock<T> = ulock::RawLock<T>;
+
 pub struct Lock {
-    inner: ulock::RawLock<()>,
+    inner: RawLock<()>,
 }
 
 impl super::Lock for Lock {
@@ -9,12 +11,12 @@ impl super::Lock for Lock {
 
     fn new() -> Self {
         Self {
-            inner: ulock::RawLock::new(()),
+            inner: RawLock::new(()),
         }
     }
 
     fn with<F: FnOnce()>(&self, f: F) {
-        let _guard = self.inner.lock::<ulock::StdThreadParker>();
+        let _guard = self.inner.lock::<ulock::Parker>();
         let _ = f();
     }
 }

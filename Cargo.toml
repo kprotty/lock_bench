@@ -5,13 +5,6 @@ edition = "2018"
 authors = ["kprotty"]
 
 [features]
-default = ["std"]
+default = ["full"]
+full = ["std"]
 std = []
-
-[[bench]]
-name = "mutex"
-harness = false
-test = false
-
-[dev-dependencies]
-parking_lot = "0.11"

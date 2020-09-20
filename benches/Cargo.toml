@@ -1,0 +1,14 @@
+[package]
+name = "benches"
+version = "0.0.0"
+publish = false
+edition = "2018"
+
+[dependencies]
+ulock = { path = "../" }
+parking_lot = "0.11"
+
+[[bench]]
+name = "sync_mutex"
+path = "./mutex/sync/mod.rs"
+harness = false
