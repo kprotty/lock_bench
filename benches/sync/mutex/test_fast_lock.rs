@@ -14,13 +14,11 @@
 
 use std::{
     thread,
-    convert::TryInto,
-    time::{Instant, Duration},
     cell::{Cell, UnsafeCell},
     ptr::{write, drop_in_place, NonNull},
     mem::MaybeUninit,
     hint::unreachable_unchecked,
-    sync::atomic::{spin_loop_hint, AtomicUsize, Ordering},
+    sync::atomic::{spin_loop_hint, AtomicUsize, AtomicU8, Ordering},
 };
 
 pub struct Lock {
@@ -29,12 +27,12 @@ pub struct Lock {
 
 impl super::Lock for Lock {
     fn name() -> &'static str {
-        "test_lock"
+        "test_fast_lock"
     }
 
     fn new() -> Self {
         Self {
-            state: AtomicUsize::new(UNLOCKED),
+            state: AtomicUsize::new(UNLOCKED as usize),
         }
     }
 
@@ -45,11 +43,12 @@ impl super::Lock for Lock {
     }
 }
 
-const UNLOCKED: usize = 0;
-const LOCKED: usize = 1;
-const WAITING: usize = !LOCKED;
+const UNLOCKED: u8 = 0;
+const LOCKED: u8 = 1;
+const WAKING: usize = 1 << 8;
+const WAITING: usize = !((1 << 9) - 1);
 
-#[repr(align(2))]
+#[repr(align(512))]
 struct Waiter {
     prev: Cell<MaybeUninit<Option<NonNull<Self>>>>,
     next: Cell<MaybeUninit<Option<NonNull<Self>>>>,
@@ -64,17 +63,16 @@ const EVENT_HANDOFF: usize = 2;
 struct Event {
     thread: thread::Thread,
     notified: AtomicUsize,
-    force_fair_at: Instant,
 }
 
 impl Lock {
+    fn byte_state(&self) -> &AtomicU8 {
+        unsafe { &*(&self.state as *const _ as *const _) }
+    }
+
     #[inline]
     fn acquire(&self) {
-        if self
-            .state
-            .compare_exchange_weak(UNLOCKED, LOCKED, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
+        if self.byte_state().swap(LOCKED, Ordering::Acquire) != UNLOCKED {
             unsafe { self.acquire_slow() };
         }
     }
@@ -93,12 +91,18 @@ impl Lock {
         let event_ptr = waiter.event.get();
         let mut state = self.state.load(Ordering::Relaxed);
 
-        'acquire: loop {
+        loop {
             let new_state;
             let head = NonNull::new((state & WAITING) as *mut Waiter);
 
-            if state & LOCKED == 0 {
-                new_state = state | LOCKED;
+            if state & (LOCKED as usize) == 0 {
+                if self.byte_state().swap(LOCKED, Ordering::Acquire) == UNLOCKED {
+                    break;
+                } else {
+                    spin_loop_hint();
+                    state = self.state.load(Ordering::Relaxed);
+                    continue;
+                }
             } else if head.is_none() && (spin <= 5) {
                 (0..(1 << spin)).for_each(|_| spin_loop_hint());
                 spin += 1;
@@ -117,13 +121,6 @@ impl Lock {
                     write(event_ptr, MaybeUninit::new(Event {
                         thread: thread::current(),
                         notified: AtomicUsize::new(EVENT_WAITING),
-                        force_fair_at: {
-                            let mut seed = &self.state as *const _ as usize;
-                            seed ^= &waiter as *const _ as usize;
-                            seed = (13 * seed) ^ (seed >> 15);
-                            let timeout_ns = (seed % 1_000_000).try_into().unwrap_or_else(|_| unreachable_unchecked());
-                            Instant::now() + Duration::new(0, timeout_ns)
-                        },
                     }));
                 }
             }
@@ -137,22 +134,22 @@ impl Lock {
                 state = e;
                 continue;
             }
-
-            if state & LOCKED == 0 {
-                break;
-            }
             
             let event = &*(&*event_ptr).as_ptr();
-            'wait: loop {
+            let unset_waking = loop {
                 match event.notified.load(Ordering::Acquire) {
                     EVENT_WAITING => thread::park(),
-                    EVENT_NOTIFIED => break 'wait,
-                    EVENT_HANDOFF => break 'acquire,
+                    EVENT_NOTIFIED => break true,
+                    EVENT_HANDOFF => break false,
                     _ => unreachable_unchecked(),
                 }
-            }
+            };
 
             event.notified.store(EVENT_WAITING, Ordering::Relaxed);
+            if unset_waking {
+                self.state.fetch_and(!WAKING, Ordering::Relaxed);
+            }
+
             spin = 0;
             waiter.prev.set(MaybeUninit::new(None));
             state = self.state.load(Ordering::Relaxed);
@@ -165,77 +162,84 @@ impl Lock {
 
     #[inline]
     fn release(&self) {
-        if self
-            .state
-            .compare_exchange(LOCKED, UNLOCKED, Ordering::Release, Ordering::Relaxed)
-            .is_err()
-        {
+        self.byte_state().store(UNLOCKED, Ordering::Release);
+
+        let state = self.state.load(Ordering::Relaxed);
+        if state != (UNLOCKED as usize) {
             unsafe { self.release_slow() };
         }
     }
 
     #[cold]
     unsafe fn release_slow(&self) {
-        let mut state = self.state.load(Ordering::Acquire);
-        let mut released_at = Instant::now();
-        let mut cas_failed = 0usize;
-
+        let mut state = self.state.load(Ordering::Relaxed);
         loop {
-            let head = &*((state & WAITING) as *mut Waiter);
-            let tail = &*head
+            if (state & WAITING == 0) || (state & ((LOCKED as usize) | WAKING) != 0) {
+                return;
+            }
+            match self.state.compare_exchange_weak(
+                state,
+                state | WAKING,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(e) => state = e,
+            }
+        }
+
+        state |= WAKING;
+        loop {
+            let head = NonNull::new_unchecked((state & WAITING) as *mut Waiter);
+            let tail = head
+                .as_ref()
                 .tail
                 .get()
                 .assume_init()
                 .unwrap_or_else(|| {
-                    let mut current = NonNull::from(head);
+                    let mut current = head;
                     loop {
                         let next = current.as_ref().next.get().assume_init();
                         let next = next.unwrap_or_else(|| unreachable_unchecked());
                         next.as_ref().prev.set(MaybeUninit::new(Some(current)));
                         current = next;
                         if let Some(tail) = current.as_ref().tail.get().assume_init() {
-                            head.tail.set(MaybeUninit::new(Some(tail)));
+                            head.as_ref().tail.set(MaybeUninit::new(Some(tail)));
                             break tail;
                         }
                     }
-                })
-                .as_ptr();
+                });
 
-            let new_tail = tail.prev.get().assume_init();
-            let event = &*(&*tail.event.get()).as_ptr();
-            let mut notify = EVENT_NOTIFIED;
-            let mut new_state = state;
-            
-            if released_at >= event.force_fair_at {
-                notify = EVENT_HANDOFF;
-            } else {
-                new_state &= !LOCKED;
-            }
-            if let Some(new_tail) = new_tail {
-                head.tail.set(MaybeUninit::new(Some(new_tail)));
-            } else {
-                new_state &= !WAITING;
+            if state & (LOCKED as usize) != 0 {
+                match self.state.compare_exchange_weak(
+                    state,
+                    state & !WAKING,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(e) => state = e,
+                }
+                continue;
             }
 
-            if let Err(e) = self.state.compare_exchange_weak(
+            let notify = EVENT_HANDOFF;
+            if let Some(new_tail) = tail.as_ref().prev.get().assume_init() {
+                head.as_ref().tail.set(MaybeUninit::new(Some(new_tail)));
+                // notify = EVENT_NOTIFIED;
+                // std::sync::atomic::fence(Ordering::Release);
+                self.state.fetch_and(!WAKING, Ordering::Release);
+            } else if let Err(e) = self.state.compare_exchange_weak(
                 state,
-                new_state,
+                UNLOCKED as usize,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                if new_tail.is_some() {
-                    head.tail.set(MaybeUninit::new(Some(NonNull::from(tail))));
-                }
-
-                cas_failed = cas_failed.wrapping_add(1);
-                if cas_failed % 10 == 0 {
-                    released_at = Instant::now();
-                }
-
                 state = e;
                 continue;
             }
 
+            let event = &*(&*tail.as_ref().event.get()).as_ptr();
             event.notified.store(notify, Ordering::Release);
             event.thread.unpark();
             return;

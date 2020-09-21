@@ -34,7 +34,9 @@ mod std_lock;
 mod parking_lot_lock;
 // mod usync_lock;
 // mod usync_mutex;
-mod test_lock;
+mod test_fast_lock;
+mod test_fair_lock;
+mod test_mini_lock;
 
 pub fn main() {
     let work_per_ns = WorkUnit::work_per_ns();
@@ -42,7 +44,9 @@ pub fn main() {
 
     for ctx in parsed.collect() {
         ctx.with_benchmarker(work_per_ns, |b| {
-            b.bench::<test_lock::Lock>();
+            b.bench::<test_mini_lock::Lock>();
+            b.bench::<test_fair_lock::Lock>();
+            b.bench::<test_fast_lock::Lock>();
             // b.bench::<usync_lock::Lock>();
             // b.bench::<usync_mutex::Lock>();
 
@@ -82,11 +86,11 @@ struct ParseValue {
 impl Into<usize> for ParseValue {
     fn into(self) -> usize {
         if self.unit.is_some() {
-            unreachable!("expected usize, found time value")
+            Parser::error("expected usize, found time value")
         } else if let Ok(value) = self.value.try_into() {
             value
         } else {
-            unreachable!("invalid usize value")
+            Parser::error("invalid usize value")
         }
     }
 }
@@ -98,7 +102,7 @@ impl Into<Duration> for ParseValue {
             Some(ParseUnit::Micros) => Duration::from_micros(self.value.try_into().unwrap()),
             Some(ParseUnit::Millis) => Duration::from_millis(self.value.try_into().unwrap()),
             Some(ParseUnit::Secs) => Duration::from_secs(self.value.try_into().unwrap()),
-            _ => unreachable!("invalid time value"),
+            _ => Parser::error("invalid time value"),
         }
     }
 }
@@ -236,7 +240,7 @@ impl Parser {
             match chars.next() {
                 None => break,
                 Some(',') => continue,
-                Some(_) => unreachable!("invalid argument continuation"),
+                Some(_) => Parser::error("invalid argument continuation"),
             }
         }
     }
@@ -256,7 +260,7 @@ impl Parser {
                 &mut parsed.measure,
                 args.next(),
                 |results, item| match item {
-                    ParseItem::Range(_, _) => unreachable!("measure time does not support ranges"),
+                    ParseItem::Range(_, _) => Parser::error("measure time does not support ranges"),
                     ParseItem::Value(value) => results.push(value.into()),
                 },
             );
