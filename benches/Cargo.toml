@@ -1,0 +1,15 @@
+[package]
+name = "benches"
+version = "0.0.0"
+edition = "2018"
+publish = false
+authors = ["kprotty"]
+
+[dependencies]
+parking_lot = "0.11"
+usync = { path = "../" }
+
+[[bench]]
+name = "sync_mutex"
+path = "./sync/mutex/mod.rs"
+harness = false
