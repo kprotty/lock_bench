@@ -14,6 +14,8 @@
 
 use std::{
     thread,
+    convert::TryInto,
+    time::{Instant, Duration},
     cell::{Cell, UnsafeCell},
     ptr::{write, drop_in_place, NonNull},
     mem::MaybeUninit,
@@ -52,7 +54,17 @@ struct Waiter {
     prev: Cell<MaybeUninit<Option<NonNull<Self>>>>,
     next: Cell<MaybeUninit<Option<NonNull<Self>>>>,
     tail: Cell<MaybeUninit<Option<NonNull<Self>>>>,
-    event: UnsafeCell<MaybeUninit<(thread::Thread, AtomicUsize)>>,
+    event: UnsafeCell<MaybeUninit<Event>>,
+}
+
+const EVENT_WAITING: usize = 0;
+const EVENT_NOTIFIED: usize = 1;
+const EVENT_HANDOFF: usize = 2;
+
+struct Event {
+    thread: thread::Thread,
+    notified: AtomicUsize,
+    force_fair_at: Instant,
 }
 
 impl Lock {
@@ -81,7 +93,7 @@ impl Lock {
         let event_ptr = waiter.event.get();
         let mut state = self.state.load(Ordering::Relaxed);
 
-        loop {
+        'acquire: loop {
             let new_state;
             let head = NonNull::new((state & WAITING) as *mut Waiter);
 
@@ -102,7 +114,17 @@ impl Lock {
                 if !has_event {
                     has_event = true;
                     waiter.prev.set(MaybeUninit::new(None));
-                    write(event_ptr, MaybeUninit::new((thread::current(), AtomicUsize::new(0))));
+                    write(event_ptr, MaybeUninit::new(Event {
+                        thread: thread::current(),
+                        notified: AtomicUsize::new(EVENT_WAITING),
+                        force_fair_at: {
+                            let mut seed = &self.state as *const _ as usize;
+                            seed ^= &waiter as *const _ as usize;
+                            seed = (13 * seed) ^ (seed >> 15);
+                            let timeout_ns = (seed % 1_000_000).try_into().unwrap_or_else(|_| unreachable_unchecked());
+                            Instant::now() + Duration::new(0, timeout_ns)
+                        },
+                    }));
                 }
             }
 
@@ -117,21 +139,27 @@ impl Lock {
             }
 
             if state & LOCKED == 0 {
-                if has_event {
-                    drop_in_place((&mut *event_ptr).as_mut_ptr());
-                }
-                return;
+                break;
             }
             
             let event = &*(&*event_ptr).as_ptr();
-            while event.1.load(Ordering::Acquire) == 0 {
-                thread::park();
+            'wait: loop {
+                match event.notified.load(Ordering::Acquire) {
+                    EVENT_WAITING => thread::park(),
+                    EVENT_NOTIFIED => break 'wait,
+                    EVENT_HANDOFF => break 'acquire,
+                    _ => unreachable_unchecked(),
+                }
             }
 
-            event.1.store(0, Ordering::Relaxed);
-            waiter.prev.set(MaybeUninit::new(None));
+            event.notified.store(EVENT_WAITING, Ordering::Relaxed);
             spin = 0;
+            waiter.prev.set(MaybeUninit::new(None));
             state = self.state.load(Ordering::Relaxed);
+        }
+
+        if has_event {
+            drop_in_place((&mut *event_ptr).as_mut_ptr());
         }
     }
 
@@ -149,6 +177,8 @@ impl Lock {
     #[cold]
     unsafe fn release_slow(&self) {
         let mut state = self.state.load(Ordering::Acquire);
+        let mut released_at = Instant::now();
+        let mut cas_failed = 0usize;
 
         loop {
             let head = &*((state & WAITING) as *mut Waiter);
@@ -172,8 +202,15 @@ impl Lock {
                 .as_ptr();
 
             let new_tail = tail.prev.get().assume_init();
-
-            let mut new_state = state & !LOCKED;
+            let event = &*(&*tail.event.get()).as_ptr();
+            let mut notify = EVENT_NOTIFIED;
+            let mut new_state = state;
+            
+            if released_at >= event.force_fair_at {
+                notify = EVENT_HANDOFF;
+            } else {
+                new_state &= !LOCKED;
+            }
             if let Some(new_tail) = new_tail {
                 head.tail.set(MaybeUninit::new(Some(new_tail)));
             } else {
@@ -189,13 +226,18 @@ impl Lock {
                 if new_tail.is_some() {
                     head.tail.set(MaybeUninit::new(Some(NonNull::from(tail))));
                 }
+
+                cas_failed = cas_failed.wrapping_add(1);
+                if cas_failed % 10 == 0 {
+                    released_at = Instant::now();
+                }
+
                 state = e;
                 continue;
             }
 
-            let event = &*(&*tail.event.get()).as_ptr();
-            event.1.store(1, Ordering::Release);
-            event.0.unpark();
+            event.notified.store(notify, Ordering::Release);
+            event.thread.unpark();
             return;
         }
     }
