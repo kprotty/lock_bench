@@ -23,10 +23,12 @@ use std::{
     sync::atomic::{spin_loop_hint, AtomicU8, Ordering},
 };
 
+type InnerLock = super::test_mini_lock::Lock;
+
 pub struct Lock {
     state: AtomicU8,
     prng: Cell<u16>,
-    lock: super::test_fast_lock::Lock,
+    lock: InnerLock,
     queue: UnsafeCell<Option<NonNull<Waiter>>>,
 }
 
@@ -42,7 +44,7 @@ impl super::Lock for Lock {
         Self {
             state: AtomicU8::new(UNLOCKED),
             prng: Cell::new(0),
-            lock: super::test_fast_lock::Lock::new(),
+            lock: InnerLock::new(),
             queue: UnsafeCell::new(None),
         }
     }
