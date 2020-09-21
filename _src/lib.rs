@@ -12,15 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 #![cfg_attr(not(feature = "std"), no_std)]
-#![warn(
-    rust_2018_idioms,
-    unreachable_pub,
-)]
 
-mod lock;
-mod thread_parker;
+pub mod core;
+pub mod generic;
 
-pub use lock::{Lock, LockFuture, LockGuard};
-pub use thread_parker::*;
+#[cfg(any(feature = "os", feature = "std"))]
+pub use if_os_or_std::*;
+
+#[cfg(any(feature = "os", feature = "std"))]
+mod if_os_or_std {
+    pub type ThreadParker = crate::core::SystemThreadParker;
+
+    pub type Mutex<T> = super::generic::Mutex<ThreadParker, T>;
+    pub type MutexGuard<'a, T> = super::generic::MutexGuard<'a, ThreadParker, T>; 
+}
