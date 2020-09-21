@@ -32,7 +32,7 @@ unsafe impl<T: Send> Sync for Lock<T> {}
 
 enum LockState<'a, T> {
     TryLock(&'a Lock<T>),
-    LockSlow(&'a Lock<T>),
+    Locking(&'a Lock<T>),
     Waiting(&'a Lock<T>),
     Locked,
 }

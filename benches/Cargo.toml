@@ -7,7 +7,7 @@ authors = ["kprotty"]
 
 [dependencies]
 parking_lot = "0.11"
-usync = { path = "../" }
+# usync = { path = "../" }
 
 [[bench]]
 name = "sync_mutex"

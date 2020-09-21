@@ -32,8 +32,9 @@ mod os_lock;
 mod spin_lock;
 mod std_lock;
 mod parking_lot_lock;
-mod usync_lock;
-mod usync_mutex;
+// mod usync_lock;
+// mod usync_mutex;
+mod test_lock;
 
 pub fn main() {
     let work_per_ns = WorkUnit::work_per_ns();
@@ -41,8 +42,9 @@ pub fn main() {
 
     for ctx in parsed.collect() {
         ctx.with_benchmarker(work_per_ns, |b| {
-            b.bench::<usync_lock::Lock>();
-            b.bench::<usync_mutex::Lock>();
+            b.bench::<test_lock::Lock>();
+            // b.bench::<usync_lock::Lock>();
+            // b.bench::<usync_mutex::Lock>();
 
             b.bench::<spin_lock::Lock>();
             b.bench::<std_lock::Lock>();
