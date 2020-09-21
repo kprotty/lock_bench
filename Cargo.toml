@@ -6,7 +6,8 @@ authors = ["kprotty"]
 
 [features]
 default = ["full"]
-full = ["std", "os"]
+# full = ["std", "os"]
+full = ["std"]
 
 std = []
 os = []

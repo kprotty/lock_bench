@@ -13,9 +13,9 @@
 // limitations under the License.
 
 use std::{
+    sync::atomic::{spin_loop_hint, AtomicBool, Ordering},
     thread,
     time::Duration,
-    sync::atomic::{AtomicBool, Ordering, spin_loop_hint},
 };
 
 pub struct Parker {

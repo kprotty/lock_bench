@@ -15,7 +15,7 @@
 use core::{ops::Add, time::Duration};
 
 pub unsafe trait ThreadParker: Sync {
-    type Instant: Copy + PartialOrd + Add<Duration, Output=Self::Instant>;
+    type Instant: Copy + PartialOrd + Add<Duration, Output = Self::Instant>;
 
     fn new() -> Self;
 
@@ -33,17 +33,17 @@ pub unsafe trait ThreadParker: Sync {
 }
 
 mod spin_parker;
-pub use spin_parker::Parker as SpinThreadParker;
+pub type SpinThreadParker = spin_parker::Parker;
 
 #[cfg(feature = "std")]
 mod std_parker;
 #[cfg(feature = "std")]
-pub use std_parker::Parker as StdThreadParker;
+pub type StdThreadParker = std_parker::Parker;
 
 #[cfg(feature = "os")]
 mod os_parker;
 #[cfg(feature = "os")]
-pub use os_parker::Parker as OsThreadParker;
+pub type OsThreadParker = os_parker::Parker;
 
 #[cfg(feature = "std")]
 pub type SystemParker = StdThreadParker;

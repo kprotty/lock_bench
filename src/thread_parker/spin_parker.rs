@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use core::{
-    ops::Add,
     cmp::Ordering as CmpOrdering,
+    ops::Add,
+    sync::atomic::{spin_loop_hint, AtomicUsize, Ordering},
     time::Duration,
-    sync::atomic::{AtomicBool, Ordering, spin_loop_hint},
 };
 
 pub struct Parker {
@@ -51,7 +51,7 @@ unsafe impl super::ThreadParker for Parker {
     }
 
     fn now() -> Self::Instant {
-        Self::Instant::now()
+        Self::Instant {}
     }
 
     fn yield_now(_iteration: usize) -> bool {
@@ -64,7 +64,7 @@ unsafe impl super::ThreadParker for Parker {
 pub struct Instant;
 
 impl Ord for Instant {
-    fn cmp(&self, other: &Self) -> CmpOrdering {
+    fn cmp(&self, _other: &Self) -> CmpOrdering {
         CmpOrdering::Equal
     }
 }
@@ -78,7 +78,7 @@ impl PartialOrd for Instant {
 impl Add<Duration> for Instant {
     type Output = Self;
 
-    fn add(self, other: Duration) -> Self {
+    fn add(self, _other: Duration) -> Self {
         Self {}
     }
 }

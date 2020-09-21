@@ -12,11 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![cfg_attr(not(feature = "std"), no_std)]
-#![warn(rust_2018_idioms, unreachable_pub)]
+use core::{
+    cell::{Cell, UnsafeCell},
+    mem::MaybeUninit,
+    ptr::NonNull,
+};
 
-mod shared;
-mod thread_parker;
+pub(crate) struct Node<T> {
+    pub(super) prev: Cell<MaybeUninit<Option<NonNull<Self>>>>,
+    pub(super) next: Cell<MaybeUninit<Option<NonNull<Self>>>>,
+    pub(super) tail: Cell<MaybeUninit<Option<NonNull<Self>>>>,
+    value: UnsafeCell<T>,
+}
 
-pub use shared::lock::{Lock, LockFuture, LockGuard};
-pub use thread_parker::*;
+pub(crate) struct List<T> {
+    head: Option<NonNull<Node<T>>>,
+}

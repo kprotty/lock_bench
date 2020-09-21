@@ -12,11 +12,5 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![cfg_attr(not(feature = "std"), no_std)]
-#![warn(rust_2018_idioms, unreachable_pub)]
-
-mod shared;
-mod thread_parker;
-
-pub use shared::lock::{Lock, LockFuture, LockGuard};
-pub use thread_parker::*;
+pub(crate) mod list;
+pub(crate) mod lock;
