@@ -171,7 +171,7 @@ impl Lock {
     #[cold]
     unsafe fn release_slow(&self) {
         let mut state = self.state.load(Ordering::Acquire);
-        // let released_at = Instant::now();
+        let mut is_fair = None;
 
         loop {
             let head = NonNull::new((state & WAITING) as *mut Waiter).unwrap();
@@ -188,14 +188,18 @@ impl Lock {
                     }
                 }
             };
-            
-            // let force_fair_at = tail.as_ref().force_fair_at.get().unwrap();
-            let be_fair = false; // released_at >= force_fair_at;
+
+            let be_fair = is_fair.unwrap_or_else(|| {
+                let force_fair_at = tail.as_ref().force_fair_at.get().unwrap();
+                is_fair = Some(Instant::now() >= force_fair_at);
+                is_fair.unwrap()
+            });
 
             if let Some(new_tail) = tail.as_ref().prev.get() {
                 head.as_ref().tail.set(Some(new_tail));
-                let all_except = if be_fair { UNLOCKED } else { LOCKED };
-                self.state.fetch_and(!all_except, Ordering::Release);
+                if !be_fair {
+                    self.state.fetch_and(!LOCKED, Ordering::Release);
+                }
 
             } else if let Err(e) = self.state.compare_exchange_weak(
                 state,
