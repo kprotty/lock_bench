@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::instant::Instant;
 use std::{
     thread,
     cell::Cell,
     convert::TryInto,
     ptr::NonNull,
-    time::{Instant, Duration},
+    time::Duration,
     sync::atomic::{spin_loop_hint, AtomicUsize, Ordering},
 };
 
@@ -96,6 +97,8 @@ impl Lock {
             } else if head.is_none() && spin <= 10 {
                 if spin <= 3 {
                     (0..(1 << spin)).for_each(|_| spin_loop_hint());
+                } else if cfg!(windows) {
+                    thread::sleep(Duration::new(0, 0));
                 } else {
                     thread::yield_now();
                 }

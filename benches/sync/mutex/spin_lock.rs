@@ -55,6 +55,8 @@ impl Lock {
             if spin <= 6 {
                 (0..(1 << spin)).for_each(|_| spin_loop_hint());
                 spin += 1;
+            } else if cfg!(windows) {
+                std::thread::sleep(std::time::Duration::new(0, 0));
             } else {
                 std::thread::yield_now();
             }
