@@ -27,6 +27,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(unix)]
+mod go_lock;
 #[cfg(any(windows, unix))]
 mod os_lock;
 mod spin_lock;
@@ -37,6 +39,7 @@ mod parking_lot_lock;
 mod test_fast_lock;
 mod test_fair_lock;
 mod test_mini_lock;
+mod test_new_lock;
 
 pub fn main() {
     let work_per_ns = WorkUnit::work_per_ns();
@@ -44,9 +47,12 @@ pub fn main() {
 
     for ctx in parsed.collect() {
         ctx.with_benchmarker(work_per_ns, |b| {
-            b.bench::<test_mini_lock::Lock>();
-            b.bench::<test_fair_lock::Lock>();
-            b.bench::<test_fast_lock::Lock>();
+            #[cfg(unix)]
+            b.bench::<go_lock::Lock>();
+            b.bench::<test_new_lock::Lock>();
+            // b.bench::<test_mini_lock::Lock>();
+            // b.bench::<test_fair_lock::Lock>();
+            // b.bench::<test_fast_lock::Lock>();
             // b.bench::<usync_lock::Lock>();
             // b.bench::<usync_mutex::Lock>();
 

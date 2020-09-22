@@ -9,6 +9,9 @@ authors = ["kprotty"]
 parking_lot = "0.11"
 # usync = { path = "../" }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.71"
+
 [[bench]]
 name = "sync_mutex"
 path = "./sync/mutex/mod.rs"

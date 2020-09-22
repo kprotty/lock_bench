@@ -50,8 +50,14 @@ impl Lock {
     }
 
     fn acquire(&self) {
+        let mut spin = 0;
         while !self.try_acquire() {
-            spin_loop_hint();
+            if spin <= 6 {
+                (0..(1 << spin)).for_each(|_| spin_loop_hint());
+                spin += 1;
+            } else {
+                std::thread::yield_now();
+            }
         }
     }
 
