@@ -43,6 +43,7 @@ mod test_fast_lock;
 mod test_fair_lock;
 mod test_mini_lock;
 mod test_new_lock;
+mod test_word_lock;
 
 pub fn main() {
     let work_per_ns = WorkUnit::work_per_ns();
@@ -55,7 +56,7 @@ pub fn main() {
             // b.bench::<test_new_lock::Lock>();
             // b.bench::<test_mini_lock::Lock>();
             b.bench::<test_fair_lock::Lock>();
-            b.bench::<test_fast_lock::Lock>();
+            b.bench::<test_word_lock::Lock>();
             // b.bench::<usync_lock::Lock>();
             // b.bench::<usync_mutex::Lock>();
 

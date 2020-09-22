@@ -19,7 +19,7 @@ use std::{
     sync::atomic::{spin_loop_hint, AtomicI32, Ordering},
 };
 
-type InnerLock = super::test_fast_lock::Lock;
+type InnerLock = super::spin_lock::Lock;
 
 pub struct Lock {
     state: AtomicI32,

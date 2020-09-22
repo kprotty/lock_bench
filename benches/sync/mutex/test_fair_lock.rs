@@ -159,10 +159,11 @@ impl Lock {
 
                 if (&*waiter.force_fair_at.as_ptr()).is_none() {
                     waiter.force_fair_at.set(Some(Instant::now() + Duration::new(0, {
-                        use std::convert::TryInto;
-                        let rng = queue.unwrap_or(NonNull::from(&waiter)).as_ptr() as usize;
-                        let rng = (13 * rng) ^ (rng >> 15);
-                        (rng % 1_000_000).try_into().unwrap()
+                        // use std::convert::TryInto;
+                        // let rng = queue.unwrap_or(NonNull::from(&waiter)).as_ptr() as usize;
+                        // let rng = (13 * rng) ^ (rng >> 15);
+                        // (rng % 1_000_000).try_into().unwrap()
+                        1_000_000
                     })));
                 }
 
