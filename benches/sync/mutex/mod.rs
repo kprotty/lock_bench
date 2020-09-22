@@ -427,7 +427,7 @@ impl<'a> Benchmarker<'a> {
         std::thread::sleep(self.ctx.measure_time);
         run_context.1.store(false, Ordering::SeqCst);
 
-        let results = threads
+        let mut results = threads
             .into_iter()
             .map(|t| t.join().unwrap())
             .collect::<Vec<_>>();
@@ -447,12 +447,15 @@ impl<'a> Benchmarker<'a> {
             stdev = stdev.sqrt();
         }
 
+        results.sort();
+        let median = results[results.len() / 2];
+
         println!(
             "{:?}",
             BenchmarkResult {
                 name: L::name().to_string(),
                 mean: mean.floor().to_string(),
-                median: results[results.len() / 2].to_string(),
+                median: median.to_string(),
                 stdev: stdev.floor().to_string(),
             }
         );
