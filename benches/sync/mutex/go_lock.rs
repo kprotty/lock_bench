@@ -14,21 +14,15 @@
 
 use std::{
     thread,
-    ptr::NonNull,
-    cell::{Cell, UnsafeCell},
     sync::atomic::{spin_loop_hint, AtomicI32, Ordering},
 };
 
-type InnerLock = super::spin_lock::Lock;
+use self::futex::Futex;
 
 pub struct Lock {
     state: AtomicI32,
-    lock: InnerLock,
-    waiters: UnsafeCell<Option<NonNull<Waiter>>>,
+    futex: Futex,
 }
-
-unsafe impl Send for Lock {}
-unsafe impl Sync for Lock {}
 
 impl super::Lock for Lock {
     fn name() -> &'static str {
@@ -38,8 +32,7 @@ impl super::Lock for Lock {
     fn new() -> Self {
         Self {
             state: AtomicI32::new(UNLOCKED),
-            lock: InnerLock::new(),
-            waiters: UnsafeCell::new(None),
+            futex: Futex::new(),
         }
     }
 
@@ -53,13 +46,6 @@ impl super::Lock for Lock {
 const UNLOCKED: i32 = 0;
 const LOCKED: i32 = 1;
 const SLEEPING: i32 = 2;
-
-struct Waiter {
-    next: Cell<Option<NonNull<Self>>>,
-    tail: Cell<NonNull<Self>>,
-    notified: AtomicI32,
-    thread: Cell<Option<thread::Thread>>,
-}
 
 impl Lock {
     #[inline]
@@ -111,7 +97,7 @@ impl Lock {
                 spin = 0;
                 wait = SLEEPING;
                 while state == SLEEPING {
-                    unsafe { self.futex_wait(SLEEPING) };
+                    unsafe { self.futex.wait(&self.state, SLEEPING) };
                     state = self.state.load(Ordering::Relaxed);
                 }
             }
@@ -127,58 +113,162 @@ impl Lock {
 
     #[cold]
     fn release_slow(&self) {
-        unsafe { self.futex_wake(1) };
+        unsafe { self.futex.wake(&self.state) };
     }
+}
 
-    unsafe fn with_queue<F>(&self, f: impl FnOnce(&mut Option<NonNull<Waiter>>) -> F) -> F {
-        use super::Lock;
-        let mut res = None;
-        self.lock.with(|| res = Some(f(&mut *self.waiters.get())));
-        res.unwrap()
-    }
+#[cfg(windows)]
+mod futex {
+    use std::{
+        mem::transmute,
+        sync::atomic::{AtomicUsize, AtomicI32, Ordering},
+    };
 
-    unsafe fn futex_wait(&self, value: i32) {
-        let mut stack_waiter = None;
+    pub struct Futex {}
 
-        if self.with_queue(|queue| {
-            if self.state.load(Ordering::Acquire) != value {
-                return false;
+    static WAIT: AtomicUsize = AtomicUsize::new(0);
+    static WAKE: AtomicUsize = AtomicUsize::new(0);
+
+    type WakeByAddressSingle = extern "system" fn(Address: usize);
+    type WaitOnAddress = extern "system" fn(
+        Address: usize,
+        CompareAddress: usize,
+        AddressSize: usize,
+        dwMilliseconds: u32,
+    ) -> bool;
+
+    impl Futex {
+        pub fn new() -> Self {
+            Self{}
+        }
+
+        pub unsafe fn wait(&self, state: &AtomicI32, value: i32) {
+            let mut wait_fn = WAIT.load(Ordering::Relaxed);
+            if wait_fn == 0 {
+                wait_fn = Self::get_slow(b"WaitOnAddress\0".as_ptr());
+                WAIT.store(wait_fn, Ordering::Relaxed);
             }
 
-            stack_waiter = Some(Waiter {
-                next: Cell::new(None),
-                tail: Cell::new(NonNull::dangling()),
-                thread: Cell::new(Some(thread::current())),
-                notified: AtomicI32::new(0),
-            });
+            let wait_fn: WaitOnAddress = transmute(wait_fn);
+            while state.load(Ordering::Acquire) == value {
+                let _ = (wait_fn)(
+                    state as *const _ as usize,
+                    &value as *const _ as usize,
+                    std::mem::size_of::<AtomicI32>(),
+                    !0u32
+                );
+            }
+        }
 
-            let waiter = stack_waiter.as_ref().unwrap();
-            waiter.tail.set(NonNull::from(waiter));
-            if let Some(head) = *queue {
-                let tail = head.as_ref().tail.get();
-                tail.as_ref().next.set(Some(NonNull::from(waiter)));
-                head.as_ref().tail.set(NonNull::from(waiter));
-            } else {
-                *queue = Some(NonNull::from(waiter));
+        pub unsafe fn wake(&self, state: &AtomicI32) {
+            let mut wake_fn = WAKE.load(Ordering::Relaxed);
+            if wake_fn == 0 {
+                wake_fn = Self::get_slow(b"WakeByAddressSingle\0".as_ptr());
+                WAKE.store(wake_fn, Ordering::Relaxed);
             }
 
-            true
-        }) {
-            let waiter = stack_waiter.as_ref().unwrap();
-            while waiter.notified.load(Ordering::Acquire) == 0 {
-                thread::park();
+            let wake_fn: WakeByAddressSingle = transmute(wake_fn);
+            (wake_fn)(state as *const _ as usize);
+        }
+
+        #[cold]
+        unsafe fn get_slow(func: *const u8) -> usize {
+            #[link(name = "kernel32")]
+            extern "system" {
+                fn GetModuleHandleA(path: *const u8) -> usize;
+                fn GetProcAddress(dll: usize, func: *const u8) -> usize;
             }
-        }        
+
+            let dll = GetModuleHandleA(b"api-ms-win-core-synch-l1-2-0.dll\0".as_ptr());
+            assert_ne!(dll, 0);
+            
+            let addr = GetProcAddress(dll, func);
+            assert_ne!(addr, 0);
+
+            addr
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+mod futex {
+    use super::{AtomicI32, Ordering, super as mutex};
+    use std::{
+        thread,
+        ptr::NonNull,
+        cell::{Cell, UnsafeCell},
+    };
+
+    type InnerLock = mutex::spin_lock::Lock;
+
+    struct Waiter {
+        next: Cell<Option<NonNull<Self>>>,
+        tail: Cell<NonNull<Self>>,
+        notified: AtomicI32,
+        thread: Cell<Option<thread::Thread>>,
     }
 
-    unsafe fn futex_wake(&self, count: u32) {
-        let mut waiters = self.with_queue(|queue| {
-            let mut waiters: Option<NonNull<Waiter>> = None;
+    pub struct Futex {
+        lock: InnerLock,
+        waiters: UnsafeCell<Option<NonNull<Waiter>>>,
+    }
 
-            for _ in 0..count {
+    unsafe impl Send for Futex {}
+    unsafe impl Sync for Futex {}
+
+    impl Futex {
+        pub fn new() -> Self {
+            Self {
+                lock: InnerLock::new(),
+                waiters: UnsafeCell::new(None),
+            }
+        }
+
+        unsafe fn with_queue<F>(&self, f: impl FnOnce(&mut Option<NonNull<Waiter>>) -> F) -> F {
+            use mutex::Lock;
+            let mut res = None;
+            self.lock.with(|| res = Some(f(&mut *self.waiters.get())));
+            res.unwrap()
+        }
+
+        pub unsafe fn wait(&self, state: &AtomicI32, value: i32) {
+            let mut stack_waiter = None;
+            if self.with_queue(|queue| {
+                if state.load(Ordering::Acquire) != value {
+                    return false;
+                }
+
+                stack_waiter = Some(Waiter {
+                    next: Cell::new(None),
+                    tail: Cell::new(NonNull::dangling()),
+                    thread: Cell::new(Some(thread::current())),
+                    notified: AtomicI32::new(0),
+                });
+
+                let waiter = stack_waiter.as_ref().unwrap();
+                waiter.tail.set(NonNull::from(waiter));
+                if let Some(head) = *queue {
+                    let tail = head.as_ref().tail.get();
+                    tail.as_ref().next.set(Some(NonNull::from(waiter)));
+                    head.as_ref().tail.set(NonNull::from(waiter));
+                } else {
+                    *queue = Some(NonNull::from(waiter));
+                }
+
+                true
+            }) {
+                let waiter = stack_waiter.as_ref().unwrap();
+                while waiter.notified.load(Ordering::Acquire) == 0 {
+                    thread::park();
+                }
+            }
+        }
+
+        pub unsafe fn wake(&self, state: &AtomicI32) {
+            if let Some(waiter) = self.with_queue(|queue| {
                 let waiter = match *queue {
                     Some(waiter) => waiter,
-                    None => break,
+                    None => return None,
                 };
     
                 *queue = waiter.as_ref().next.get();
@@ -186,25 +276,12 @@ impl Lock {
                     next.as_ref().tail.set(waiter.as_ref().tail.get());
                 }
     
-                waiter.as_ref().next.set(None);
-                waiter.as_ref().tail.set(waiter);
-                if let Some(head) = waiters {
-                    let tail = head.as_ref().tail.get();
-                    tail.as_ref().next.set(Some(waiter));
-                    head.as_ref().tail.set(waiter);
-                } else {
-                    waiters = Some(waiter);
-                }
+                Some(waiter)
+            }) {
+                let thread = waiter.as_ref().thread.replace(None).unwrap();
+                waiter.as_ref().notified.store(1, Ordering::Release);
+                thread.unpark();
             }
-
-            waiters
-        });
-
-        while let Some(waiter) = waiters {
-            waiters = waiter.as_ref().next.get();
-            let thread = waiter.as_ref().thread.replace(None).unwrap();
-            waiter.as_ref().notified.store(1, Ordering::Release);
-            thread.unpark();
         }
     }
 }
