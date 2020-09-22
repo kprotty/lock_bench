@@ -21,7 +21,7 @@ use std::{
     sync::atomic::{spin_loop_hint, AtomicUsize, Ordering},
 };
 
-type InnerLock = super::go_lock::Lock;
+type InnerLock = super::test_word_lock::Lock;
 
 pub struct Lock {
     state: AtomicUsize,
