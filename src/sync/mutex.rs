@@ -357,8 +357,9 @@ impl<'a, P: Parker, T> MutexLockFuture<'a, P, T> {
                     return false;
                 }
 
+                let timeout_ns = 1_000_000;
                 *waiter.get() =
-                    WaitState::Waiting(ctx.waker().clone(), P::now() + Duration::new(0, 1_000_000));
+                    WaitState::Waiting(ctx.waker().clone(), P::now() + Duration::new(0, timeout_ns));
 
                 queue.push_back(NonNull::from(waiter));
                 true

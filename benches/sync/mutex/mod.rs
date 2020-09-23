@@ -44,6 +44,7 @@ mod test_fast_lock;
 mod test_mini_lock;
 mod test_new_lock;
 mod test_word_lock;
+mod simple_mutex_lock;
 
 pub fn main() {
     let work_per_ns = WorkUnit::work_per_ns();
@@ -55,7 +56,7 @@ pub fn main() {
             b.bench::<usync_lock::Lock>();
 
             #[cfg(any(windows, unix))]
-            // b.bench::<go_lock::Lock>();
+            b.bench::<go_lock::Lock>();
             b.bench::<test_new_lock::Lock>();
             // b.bench::<test_mini_lock::Lock>();
             b.bench::<test_fair_lock::Lock>();
@@ -67,6 +68,7 @@ pub fn main() {
             #[cfg(any(windows, unix))]
             // b.bench::<os_lock::Lock>();
             b.bench::<parking_lot_lock::Lock>();
+            b.bench::<simple_mutex_lock::Lock>();
         });
     }
 
@@ -475,7 +477,7 @@ impl fmt::Debug for BenchmarkResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{:<18} | {:>12} | {:>11} | {:>10}",
+            "{:<19} | {:>12} | {:>11} | {:>10}",
             self.name, self.mean, self.median, self.stdev,
         )
     }

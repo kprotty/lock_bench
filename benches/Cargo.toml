@@ -8,6 +8,7 @@ authors = ["kprotty"]
 [dependencies]
 parking_lot = "0.11"
 usync = { path = "../" }
+simple-mutex = "1.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.71"
