@@ -13,16 +13,16 @@
 // limitations under the License.
 
 use std::{
-    thread,
     cell::{Cell, UnsafeCell},
-    ptr::{write, drop_in_place, NonNull},
-    mem::MaybeUninit,
     hint::unreachable_unchecked,
-    sync::atomic::{spin_loop_hint, AtomicUsize, AtomicU8, Ordering},
+    mem::MaybeUninit,
+    ptr::{drop_in_place, write, NonNull},
+    sync::atomic::{spin_loop_hint, AtomicU8, AtomicUsize, Ordering},
+    thread,
 };
 
 pub struct Lock {
-    state: AtomicUsize
+    state: AtomicUsize,
 }
 
 impl super::Lock for Lock {
@@ -118,10 +118,13 @@ impl Lock {
                 if !has_event {
                     has_event = true;
                     waiter.prev.set(MaybeUninit::new(None));
-                    write(event_ptr, MaybeUninit::new(Event {
-                        thread: thread::current(),
-                        notified: AtomicUsize::new(EVENT_WAITING),
-                    }));
+                    write(
+                        event_ptr,
+                        MaybeUninit::new(Event {
+                            thread: thread::current(),
+                            notified: AtomicUsize::new(EVENT_WAITING),
+                        }),
+                    );
                 }
             }
 
@@ -134,7 +137,7 @@ impl Lock {
                 state = e;
                 continue;
             }
-            
+
             let event = &*(&*event_ptr).as_ptr();
             let unset_waking = loop {
                 match event.notified.load(Ordering::Acquire) {
@@ -191,24 +194,19 @@ impl Lock {
         state |= WAKING;
         loop {
             let head = NonNull::new_unchecked((state & WAITING) as *mut Waiter);
-            let tail = head
-                .as_ref()
-                .tail
-                .get()
-                .assume_init()
-                .unwrap_or_else(|| {
-                    let mut current = head;
-                    loop {
-                        let next = current.as_ref().next.get().assume_init();
-                        let next = next.unwrap_or_else(|| unreachable_unchecked());
-                        next.as_ref().prev.set(MaybeUninit::new(Some(current)));
-                        current = next;
-                        if let Some(tail) = current.as_ref().tail.get().assume_init() {
-                            head.as_ref().tail.set(MaybeUninit::new(Some(tail)));
-                            break tail;
-                        }
+            let tail = head.as_ref().tail.get().assume_init().unwrap_or_else(|| {
+                let mut current = head;
+                loop {
+                    let next = current.as_ref().next.get().assume_init();
+                    let next = next.unwrap_or_else(|| unreachable_unchecked());
+                    next.as_ref().prev.set(MaybeUninit::new(Some(current)));
+                    current = next;
+                    if let Some(tail) = current.as_ref().tail.get().assume_init() {
+                        head.as_ref().tail.set(MaybeUninit::new(Some(tail)));
+                        break tail;
                     }
-                });
+                }
+            });
 
             if state & (LOCKED as usize) != 0 {
                 match self.state.compare_exchange_weak(

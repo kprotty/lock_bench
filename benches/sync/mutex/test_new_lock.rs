@@ -14,12 +14,12 @@
 
 use super::instant::Instant;
 use std::{
-    thread,
     cell::Cell,
     convert::TryInto,
     ptr::NonNull,
-    time::Duration,
     sync::atomic::{spin_loop_hint, AtomicUsize, Ordering},
+    thread,
+    time::Duration,
 };
 
 pub struct Lock {
@@ -93,7 +93,6 @@ impl Lock {
 
             if state & LOCKED == 0 {
                 new_state = state | LOCKED;
-
             } else if head.is_none() && spin <= 10 {
                 if spin <= 3 {
                     (0..(1 << spin)).for_each(|_| spin_loop_hint());
@@ -105,7 +104,6 @@ impl Lock {
                 spin += 1;
                 state = self.state.load(Ordering::Relaxed);
                 continue;
-
             } else {
                 new_state = (state & !WAITING) | (&waiter as *const _ as usize);
                 waiter.next.set(head);
@@ -122,12 +120,13 @@ impl Lock {
 
                 if (&*waiter.force_fair_at.as_ptr()).is_none() {
                     waiter.force_fair_at.set(Some({
-                        Instant::now() + Duration::new(0, {
-                            let ptr = head.unwrap_or(NonNull::from(&waiter)).as_ptr() as usize;
-                            let ptr = ((ptr * 13) ^ (ptr >> 15)) & (!0u32 as usize);
-                            let rng_u32: u32 = ptr.try_into().unwrap();
-                            rng_u32 % 1_000_000
-                        })
+                        Instant::now()
+                            + Duration::new(0, {
+                                let ptr = head.unwrap_or(NonNull::from(&waiter)).as_ptr() as usize;
+                                let ptr = ((ptr * 13) ^ (ptr >> 15)) & (!0u32 as usize);
+                                let rng_u32: u32 = ptr.try_into().unwrap();
+                                rng_u32 % 1_000_000
+                            })
                     }));
                 }
             }
@@ -145,7 +144,7 @@ impl Lock {
             if state & LOCKED == 0 {
                 return;
             }
-            
+
             loop {
                 match waiter.state.load(Ordering::Acquire) {
                     EVENT_WAITING => thread::park(),
@@ -203,7 +202,6 @@ impl Lock {
                 if !be_fair {
                     self.state.fetch_and(!LOCKED, Ordering::Release);
                 }
-
             } else if let Err(e) = self.state.compare_exchange_weak(
                 state,
                 if be_fair { LOCKED } else { UNLOCKED },
@@ -214,7 +212,11 @@ impl Lock {
                 continue;
             }
 
-            let new_state = if be_fair { EVENT_ACQUIRED } else { EVENT_NOTIFIED };
+            let new_state = if be_fair {
+                EVENT_ACQUIRED
+            } else {
+                EVENT_NOTIFIED
+            };
             let thread = tail.as_ref().thread.replace(None).unwrap();
             tail.as_ref().state.store(new_state, Ordering::Release);
             thread.unpark();

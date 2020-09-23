@@ -13,14 +13,14 @@
 // limitations under the License.
 
 use std::{
-    thread,
-    convert::TryInto,
-    time::{Instant, Duration},
     cell::{Cell, UnsafeCell},
-    ptr::{write, drop_in_place, NonNull},
-    mem::MaybeUninit,
+    convert::TryInto,
     hint::unreachable_unchecked,
+    mem::MaybeUninit,
+    ptr::{drop_in_place, write, NonNull},
     sync::atomic::{spin_loop_hint, AtomicUsize, Ordering},
+    thread,
+    time::{Duration, Instant},
 };
 
 pub struct Lock {
@@ -116,17 +116,22 @@ impl Lock {
                 if !has_event {
                     has_event = true;
                     waiter.prev.set(MaybeUninit::new(None));
-                    write(event_ptr, MaybeUninit::new(Event {
-                        thread: thread::current(),
-                        notified: AtomicUsize::new(EVENT_WAITING),
-                        force_fair_at: {
-                            let mut seed = &self.state as *const _ as usize;
-                            seed ^= &waiter as *const _ as usize;
-                            seed = (13 * seed) ^ (seed >> 15);
-                            let timeout_ns = (seed % 1_000_000).try_into().unwrap_or_else(|_| unreachable_unchecked());
-                            Instant::now() + Duration::new(0, timeout_ns)
-                        },
-                    }));
+                    write(
+                        event_ptr,
+                        MaybeUninit::new(Event {
+                            thread: thread::current(),
+                            notified: AtomicUsize::new(EVENT_WAITING),
+                            force_fair_at: {
+                                let mut seed = &self.state as *const _ as usize;
+                                seed ^= &waiter as *const _ as usize;
+                                seed = (13 * seed) ^ (seed >> 15);
+                                let timeout_ns = (seed % 1_000_000)
+                                    .try_into()
+                                    .unwrap_or_else(|_| unreachable_unchecked());
+                                Instant::now() + Duration::new(0, timeout_ns)
+                            },
+                        }),
+                    );
                 }
             }
 
@@ -143,7 +148,7 @@ impl Lock {
             if state & LOCKED == 0 {
                 break;
             }
-            
+
             let event = &*(&*event_ptr).as_ptr();
             'wait: loop {
                 match event.notified.load(Ordering::Acquire) {
@@ -211,7 +216,7 @@ impl Lock {
                 let event = &*(&*tail.event.get()).as_ptr();
                 let mut notify = EVENT_NOTIFIED;
                 let mut new_state = state;
-                
+
                 if released_at >= event.force_fair_at {
                     notify = EVENT_HANDOFF;
                 } else {

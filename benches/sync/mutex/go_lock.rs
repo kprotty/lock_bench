@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use std::{
-    thread,
     sync::atomic::{spin_loop_hint, AtomicI32, Ordering},
+    thread,
 };
 
 use self::futex::Futex;
@@ -78,7 +78,6 @@ impl Lock {
                 (0..32).for_each(|_| spin_loop_hint());
                 state = self.state.load(Ordering::Relaxed);
                 spin += 1;
-
             } else if spin < 5 {
                 if cfg!(windows) {
                     thread::sleep(std::time::Duration::new(0, 0));
@@ -87,13 +86,12 @@ impl Lock {
                 }
                 state = self.state.load(Ordering::Relaxed);
                 spin += 1;
-
             } else {
                 state = self.state.swap(SLEEPING, Ordering::Acquire);
                 if state == UNLOCKED {
                     break;
                 }
-                
+
                 spin = 0;
                 wait = SLEEPING;
                 while state == SLEEPING {
@@ -121,7 +119,7 @@ impl Lock {
 mod futex {
     use std::{
         mem::transmute,
-        sync::atomic::{AtomicUsize, AtomicI32, Ordering},
+        sync::atomic::{AtomicI32, AtomicUsize, Ordering},
     };
 
     pub struct Futex {}
@@ -139,7 +137,7 @@ mod futex {
 
     impl Futex {
         pub fn new() -> Self {
-            Self{}
+            Self {}
         }
 
         pub unsafe fn wait(&self, state: &AtomicI32, value: i32) {
@@ -155,7 +153,7 @@ mod futex {
                     state as *const _ as usize,
                     &value as *const _ as usize,
                     std::mem::size_of::<AtomicI32>(),
-                    !0u32
+                    !0u32,
                 );
             }
         }
@@ -181,7 +179,7 @@ mod futex {
 
             let dll = GetModuleHandleA(b"api-ms-win-core-synch-l1-2-0.dll\0".as_ptr());
             assert_ne!(dll, 0);
-            
+
             let addr = GetProcAddress(dll, func);
             assert_ne!(addr, 0);
 
@@ -192,11 +190,11 @@ mod futex {
 
 #[cfg(not(any(windows, target_os = "linux")))]
 mod futex {
-    use super::{AtomicI32, Ordering, super as mutex};
+    use super::{super as mutex, AtomicI32, Ordering};
     use std::{
-        thread,
-        ptr::NonNull,
         cell::{Cell, UnsafeCell},
+        ptr::NonNull,
+        thread,
     };
 
     type InnerLock = mutex::spin_lock::Lock;
@@ -270,12 +268,12 @@ mod futex {
                     Some(waiter) => waiter,
                     None => return None,
                 };
-    
+
                 *queue = waiter.as_ref().next.get();
                 if let Some(next) = *queue {
                     next.as_ref().tail.set(waiter.as_ref().tail.get());
                 }
-    
+
                 Some(waiter)
             }) {
                 let thread = waiter.as_ref().thread.replace(None).unwrap();

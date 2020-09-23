@@ -14,11 +14,11 @@
 
 use super::instant::Instant;
 use std::{
-    thread,
-    time::Duration,
     cell::{Cell, UnsafeCell},
     ptr::NonNull,
     sync::atomic::{spin_loop_hint, AtomicUsize, Ordering},
+    thread,
+    time::Duration,
 };
 
 type InnerLock = super::test_new_lock::Lock;
@@ -74,7 +74,7 @@ impl Lock {
         let mut ret = None;
         self.lock.with(|| ret = Some(f(&mut *self.queue.get())));
         ret.unwrap()
-    } 
+    }
 
     #[inline]
     fn acquire(&self) {
@@ -158,13 +158,16 @@ impl Lock {
                 }
 
                 if (&*waiter.force_fair_at.as_ptr()).is_none() {
-                    waiter.force_fair_at.set(Some(Instant::now() + Duration::new(0, {
-                        // use std::convert::TryInto;
-                        // let rng = queue.unwrap_or(NonNull::from(&waiter)).as_ptr() as usize;
-                        // let rng = (13 * rng) ^ (rng >> 15);
-                        // (rng % 1_000_000).try_into().unwrap()
-                        1_000_000
-                    })));
+                    waiter.force_fair_at.set(Some(
+                        Instant::now()
+                            + Duration::new(0, {
+                                // use std::convert::TryInto;
+                                // let rng = queue.unwrap_or(NonNull::from(&waiter)).as_ptr() as usize;
+                                // let rng = (13 * rng) ^ (rng >> 15);
+                                // (rng % 1_000_000).try_into().unwrap()
+                                1_000_000
+                            }),
+                    ));
                 }
 
                 true
@@ -198,34 +201,36 @@ impl Lock {
     #[cold]
     unsafe fn release_slow(&self) {
         if let Some((waiter, notify)) = self.with_queue(|queue| {
-            (*queue).map(|head| {
-                let waiter = &*head.as_ptr();
-                *queue = waiter.next.get();
+            (*queue)
+                .map(|head| {
+                    let waiter = &*head.as_ptr();
+                    *queue = waiter.next.get();
 
-                let has_more = (*queue).is_some();
-                if let Some(next) = *queue {
-                    next.as_ref().tail.set(waiter.tail.get());
-                }
-
-                let force_fair_at = waiter.force_fair_at.get().unwrap();
-                let notify = if Instant::now() >= force_fair_at {
-                    if !has_more {
-                        self.state.store(LOCKED, Ordering::Relaxed);
+                    let has_more = (*queue).is_some();
+                    if let Some(next) = *queue {
+                        next.as_ref().tail.set(waiter.tail.get());
                     }
-                    EVENT_HANDOFF
-                } else if has_more {
-                    self.state.store(PARKED, Ordering::Release);
-                    EVENT_NOTIFIED
-                } else {
-                    self.state.store(UNLOCKED, Ordering::Release);
-                    EVENT_NOTIFIED
-                };
 
-                Some((waiter, notify))
-            }).unwrap_or_else(|| {
-                self.state.store(UNLOCKED, Ordering::Release);
-                None
-            })
+                    let force_fair_at = waiter.force_fair_at.get().unwrap();
+                    let notify = if Instant::now() >= force_fair_at {
+                        if !has_more {
+                            self.state.store(LOCKED, Ordering::Relaxed);
+                        }
+                        EVENT_HANDOFF
+                    } else if has_more {
+                        self.state.store(PARKED, Ordering::Release);
+                        EVENT_NOTIFIED
+                    } else {
+                        self.state.store(UNLOCKED, Ordering::Release);
+                        EVENT_NOTIFIED
+                    };
+
+                    Some((waiter, notify))
+                })
+                .unwrap_or_else(|| {
+                    self.state.store(UNLOCKED, Ordering::Release);
+                    None
+                })
         }) {
             let thread = waiter.thread.replace(None).unwrap();
             waiter.state.store(notify, Ordering::Release);

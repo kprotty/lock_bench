@@ -1,4 +1,8 @@
-use std::{convert::TryInto, ops::{Add, Sub}, time::Duration};
+use std::{
+    convert::TryInto,
+    ops::{Add, Sub},
+    time::Duration,
+};
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug, Hash)]
 pub struct Instant(u64);
@@ -45,12 +49,9 @@ impl Instant {
         loop {
             if last >= ts {
                 return last;
-            } else if let Err(e) = LAST.compare_exchange_weak(
-                last,
-                ts,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
+            } else if let Err(e) =
+                LAST.compare_exchange_weak(last, ts, Ordering::Relaxed, Ordering::Relaxed)
+            {
                 last = e;
             } else {
                 return ts;
@@ -62,7 +63,10 @@ impl Instant {
 #[cfg(not(target_pointer_width = "64"))]
 impl Instant {
     unsafe fn now_monotonic() -> u64 {
-        use std::{thread, sync::atomic::{AtomicBool, Ordering, spin_loop_hint}};
+        use std::{
+            sync::atomic::{spin_loop_hint, AtomicBool, Ordering},
+            thread,
+        };
         static mut LAST: u64 = 0;
         static LOCK: AtomicBool = AtomicBool::new(false);
 
@@ -95,7 +99,10 @@ impl Instant {
     const IS_ACTUALLY_MONOTONIC: bool = false;
 
     unsafe fn nanotime() -> u64 {
-        use std::{mem::transmute, sync::atomic::{AtomicU8, Ordering}};
+        use std::{
+            mem::transmute,
+            sync::atomic::{AtomicU8, Ordering},
+        };
 
         #[link(name = "kernel32")]
         extern "system" {
@@ -112,7 +119,10 @@ impl Instant {
             } else {
                 let mut freq = 0i64;
                 assert!(QueryPerformanceFrequency(&mut freq));
-                if FREQ_STATE.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                if FREQ_STATE
+                    .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+                {
                     FREQ = freq;
                     FREQ_STATE.store(2, Ordering::Release);
                 }

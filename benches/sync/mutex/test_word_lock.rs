@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use std::{
-    thread,
     cell::Cell,
     ptr::NonNull,
     sync::atomic::{spin_loop_hint, AtomicUsize, Ordering},
+    thread,
 };
 
 pub struct Lock {
@@ -88,7 +88,6 @@ impl Lock {
 
             if state & LOCKED == 0 {
                 new_state = state | LOCKED;
-
             } else if head.is_none() && spin <= 10 {
                 if spin <= 3 {
                     (0..(1 << spin)).for_each(|_| spin_loop_hint());
@@ -100,7 +99,6 @@ impl Lock {
                 spin += 1;
                 state = self.state.load(Ordering::Relaxed);
                 continue;
-
             } else {
                 new_state = (state & !WAITING) | (&waiter as *const _ as usize);
                 waiter.next.set(head);
@@ -129,7 +127,7 @@ impl Lock {
             if state & LOCKED == 0 {
                 return;
             }
-            
+
             loop {
                 match waiter.state.load(Ordering::Acquire) {
                     EVENT_WAITING => thread::park(),
@@ -197,12 +195,11 @@ impl Lock {
                     Err(e) => state = e,
                 }
                 continue;
-            }            
+            }
 
             if let Some(new_tail) = tail.as_ref().prev.get() {
                 head.as_ref().tail.set(Some(new_tail));
                 self.state.fetch_and(!WAKING, Ordering::Release);
-
             } else if let Err(e) = self.state.compare_exchange_weak(
                 state,
                 UNLOCKED,

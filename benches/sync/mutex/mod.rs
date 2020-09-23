@@ -24,7 +24,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Barrier,
     },
-    time::{Duration},
+    time::Duration,
 };
 
 mod instant;
@@ -34,13 +34,13 @@ pub use instant::Instant;
 mod go_lock;
 #[cfg(any(windows, unix))]
 mod os_lock;
+mod parking_lot_lock;
 mod spin_lock;
 mod std_lock;
-mod parking_lot_lock;
 // mod usync_lock;
 // mod usync_mutex;
-mod test_fast_lock;
 mod test_fair_lock;
+mod test_fast_lock;
 mod test_mini_lock;
 mod test_new_lock;
 mod test_word_lock;
