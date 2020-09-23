@@ -38,7 +38,7 @@ mod parking_lot_lock;
 mod spin_lock;
 mod std_lock;
 mod usync_lock;
-// mod usync_mutex;
+mod usync_mutex;
 mod test_fair_lock;
 mod test_fast_lock;
 mod test_mini_lock;
@@ -51,21 +51,21 @@ pub fn main() {
 
     for ctx in parsed.collect() {
         ctx.with_benchmarker(work_per_ns, |b| {
+            b.bench::<usync_mutex::Lock>();
             b.bench::<usync_lock::Lock>();
-            // b.bench::<usync_mutex::Lock>();
 
             #[cfg(any(windows, unix))]
-            b.bench::<go_lock::Lock>();
+            // b.bench::<go_lock::Lock>();
             b.bench::<test_new_lock::Lock>();
             // b.bench::<test_mini_lock::Lock>();
-            // b.bench::<test_fair_lock::Lock>();
+            b.bench::<test_fair_lock::Lock>();
             // b.bench::<test_word_lock::Lock>();
             
 
-            b.bench::<spin_lock::Lock>();
+            // b.bench::<spin_lock::Lock>();
             b.bench::<std_lock::Lock>();
             #[cfg(any(windows, unix))]
-            b.bench::<os_lock::Lock>();
+            // b.bench::<os_lock::Lock>();
             b.bench::<parking_lot_lock::Lock>();
         });
     }
@@ -431,7 +431,7 @@ impl<'a> Benchmarker<'a> {
 
         let mut results = threads
             .into_iter()
-            .map(|t| t.join().unwrap())
+            .map(|t| t.join().expect("failed to join os thread"))
             .collect::<Vec<_>>();
 
         let mean = results

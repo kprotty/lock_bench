@@ -12,10 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod async_parker;
 mod list;
 mod lock;
+mod park_waker;
 
-pub use async_parker::AsyncParker;
 pub use list::{List, Node};
-pub use lock::{Lock, LockFuture, LockGuard};
+pub use lock::{Lock as RawLock, LockFuture as RawLockFuture, LockGuard as RawLockGuard};
+pub(crate) use park_waker::ParkWaker;
+
+pub trait StaticInit {
+    const INIT: Self;
+}

@@ -12,25 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-type Mutex<T> = usync::base::RawLock<usync::sync::Parker, T>;
+mod mutex;
+pub use mutex::{
+    Mutex as RawMutex, MutexGuard as RawMutexGuard, MutexLockFuture as RawMutexLockFuture,
+};
 
-pub struct Lock {
-    inner: Mutex<()>,
-}
+#[cfg(any(feature = "std", feature = "os"))]
+pub type Parker = crate::thread_parker::SystemParker;
+#[cfg(all(feature = "spin", not(any(feature = "std", feature = "os"))))]
+pub type Parker = crate::thread_parker::SpinParker;
 
-impl super::Lock for Lock {
-    fn name() -> &'static str {
-        "usync::Lock"
-    }
-
-    fn new() -> Self {
-        Self {
-            inner: Mutex::new(()),
-        }
-    }
-
-    fn with<F: FnOnce()>(&self, f: F) {
-        let _guard = self.inner.lock();
-        let _ = f();
-    }
-}
+pub type Mutex<T> = RawMutex<Parker, T>;
+pub type MutexLockFuture<'a, T> = RawMutexLockFuture<'a, Parker, T>;
+pub type MutexGuard<'a, T> = RawMutexGuard<'a, Parker, T>;

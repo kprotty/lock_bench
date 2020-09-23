@@ -32,7 +32,9 @@ pub unsafe trait ThreadParker: Sync {
     fn yield_now(iteration: usize) -> bool;
 }
 
+#[cfg(feature = "spin")]
 mod spin_parker;
+#[cfg(feature = "spin")]
 pub type SpinThreadParker = spin_parker::Parker;
 
 #[cfg(feature = "std")]
@@ -49,8 +51,3 @@ pub type OsThreadParker = os_parker::Parker;
 pub type SystemParker = StdThreadParker;
 #[cfg(all(feature = "os", not(feature = "std")))]
 pub type SystemParker = OsThreadParker;
-
-#[cfg(any(feature = "std", feature = "os"))]
-pub type DefaultParker = SystemParker;
-#[cfg(not(any(feature = "std", feature = "os")))]
-pub type DefaultParker = SpinThreadParker;

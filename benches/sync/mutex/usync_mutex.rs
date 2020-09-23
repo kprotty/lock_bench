@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+type Mutex<T> = usync::sync::Mutex<T>;
+
 pub struct Lock {
-    inner: usync::Mutex<()>,
+    inner: Mutex<()>,
 }
 
 impl super::Lock for Lock {
@@ -23,7 +25,7 @@ impl super::Lock for Lock {
 
     fn new() -> Self {
         Self {
-            inner: usync::Mutex::new(()),
+            inner: Mutex::new(()),
         }
     }
 

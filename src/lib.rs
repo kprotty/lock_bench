@@ -16,6 +16,5 @@
 #![warn(rust_2018_idioms, unreachable_pub)]
 
 pub mod base;
-mod thread_parker;
-
-pub use thread_parker::*;
+pub mod sync;
+pub mod thread_parker;

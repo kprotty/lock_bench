@@ -14,15 +14,14 @@
 
 use core::{
     cell::{Cell, UnsafeCell},
-    mem::MaybeUninit,
     ptr::NonNull,
 };
 
 #[derive(Debug)]
 pub struct Node<T> {
-    pub prev: Cell<MaybeUninit<Option<NonNull<Self>>>>,
-    pub next: Cell<MaybeUninit<Option<NonNull<Self>>>>,
-    pub tail: Cell<MaybeUninit<Option<NonNull<Self>>>>,
+    pub prev: Cell<Option<NonNull<Self>>>,
+    pub next: Cell<Option<NonNull<Self>>>,
+    pub tail: Cell<Option<NonNull<Self>>>,
     value: UnsafeCell<T>,
 }
 
@@ -41,9 +40,9 @@ impl<T> From<T> for Node<T> {
 impl<T> Node<T> {
     pub const fn new(value: T) -> Self {
         Self {
-            prev: Cell::new(MaybeUninit::uninit()),
-            next: Cell::new(MaybeUninit::uninit()),
-            tail: Cell::new(MaybeUninit::uninit()),
+            prev: Cell::new(None),
+            next: Cell::new(None),
+            tail: Cell::new(None),
             value: UnsafeCell::new(value),
         }
     }
@@ -72,27 +71,31 @@ impl<T> List<T> {
     }
 
     pub unsafe fn push_back(&mut self, node: NonNull<Node<T>>) {
-        node.as_ref().next.set(MaybeUninit::new(None));
-        node.as_ref().tail.set(MaybeUninit::new(Some(node)));
+        node.as_ref().next.set(None);
+        node.as_ref().tail.set(Some(node));
 
         if let Some(head) = self.head {
-            let tail = head.as_ref().tail.get().assume_init().unwrap();
-            node.as_ref().prev.set(MaybeUninit::new(Some(tail)));
-            tail.as_ref().next.set(MaybeUninit::new(Some(node)));
-            head.as_ref().tail.set(MaybeUninit::new(Some(node)));
+            let tail = head
+                .as_ref()
+                .tail
+                .get()
+                .expect("waiter list head without a tail");
+            node.as_ref().prev.set(Some(tail));
+            tail.as_ref().next.set(Some(node));
+            head.as_ref().tail.set(Some(node));
         } else {
             self.head = Some(node);
-            node.as_ref().prev.set(MaybeUninit::new(None));
+            node.as_ref().prev.set(None);
         }
     }
 
     pub unsafe fn push_front(&mut self, node: NonNull<Node<T>>) {
-        node.as_ref().prev.set(MaybeUninit::new(None));
-        node.as_ref().next.set(MaybeUninit::new(self.head));
+        node.as_ref().prev.set(None);
+        node.as_ref().next.set(self.head);
 
         if let Some(head) = std::mem::replace(&mut self.head, Some(node)) {
             node.as_ref().tail.set(head.as_ref().tail.get());
-            head.as_ref().prev.set(MaybeUninit::new(Some(node)));
+            head.as_ref().prev.set(Some(node));
         }
     }
 
@@ -110,25 +113,33 @@ impl<T> List<T> {
 
     pub unsafe fn pop_back(&mut self) -> Option<NonNull<Node<T>>> {
         self.head.map(|head| {
-            let node = head.as_ref().tail.get().assume_init().unwrap();
+            let node = head
+                .as_ref()
+                .tail
+                .get()
+                .expect("waiter list head without tail");
             assert!(self.try_remove(node));
             node
         })
     }
 
     pub unsafe fn try_remove(&mut self, node: NonNull<Node<T>>) -> bool {
-        let prev = node.as_ref().prev.get().assume_init();
-        let next = node.as_ref().next.get().assume_init();
+        if node.as_ref().tail.get().is_none() {
+            return false;
+        }
+
         let head = match self.head {
             Some(head) => head,
             None => return false,
         };
 
+        let prev = node.as_ref().prev.get();
+        let next = node.as_ref().next.get();
         if let Some(prev) = prev {
-            prev.as_ref().next.set(MaybeUninit::new(next));
+            prev.as_ref().next.set(next);
         }
         if let Some(next) = next {
-            next.as_ref().prev.set(MaybeUninit::new(prev));
+            next.as_ref().prev.set(prev);
         }
 
         if head == NonNull::from(node) {
@@ -136,13 +147,13 @@ impl<T> List<T> {
             if let Some(new_head) = self.head {
                 new_head.as_ref().tail.set(head.as_ref().tail.get());
             }
-        } else if head.as_ref().tail.get().assume_init() == Some(NonNull::from(node)) {
-            head.as_ref().tail.set(MaybeUninit::new(prev));
+        } else if head.as_ref().tail.get() == Some(NonNull::from(node)) {
+            head.as_ref().tail.set(prev);
         }
 
-        node.as_ref().next.set(MaybeUninit::new(None));
-        node.as_ref().prev.set(MaybeUninit::new(None));
-        node.as_ref().tail.set(MaybeUninit::new(None));
+        node.as_ref().next.set(None);
+        node.as_ref().prev.set(None);
+        node.as_ref().tail.set(None);
         true
     }
 }

@@ -12,27 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{super::ThreadParker as Parker, list::Node, AsyncParker};
+use crate::{
+    base::{Node, ParkWaker},
+    thread_parker::ThreadParker as Parker,
+};
 use core::{
     cell::{Cell, UnsafeCell},
     convert::TryInto,
     future::Future,
     marker::{PhantomData, PhantomPinned},
-    mem::{replace, MaybeUninit},
+    mem::replace,
     ops::{Deref, DerefMut},
     pin::Pin,
     ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
-    task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 
 const UNLOCKED: usize = 0;
 const LOCKED: usize = 1;
 const WAITING: usize = !LOCKED;
-
-const WAKER_NOTIFIED: usize = 0;
-const WAKER_ACQUIRED: usize = 1;
 
 pub struct Lock<P, T> {
     state: AtomicUsize,
@@ -43,6 +43,24 @@ pub struct Lock<P, T> {
 unsafe impl<P, T: Send> Send for Lock<P, T> {}
 unsafe impl<P, T: Send> Sync for Lock<P, T> {}
 
+impl<P, T: Default> Default for Lock<P, T> {
+    fn default() -> Self {
+        Self::from(T::default())
+    }
+}
+
+impl<P, T> From<T> for Lock<P, T> {
+    fn from(value: T) -> Self {
+        Self::new(value)
+    }
+}
+
+impl<P, T> AsMut<T> for Lock<P, T> {
+    fn as_mut(&mut self) -> &mut T {
+        unsafe { &mut *self.value.get() }
+    }
+}
+
 impl<P, T> Lock<P, T> {
     pub const fn new(value: T) -> Self {
         Self {
@@ -50,6 +68,10 @@ impl<P, T> Lock<P, T> {
             value: UnsafeCell::new(value),
             _phantom: PhantomData,
         }
+    }
+
+    pub fn into_inner(self) -> T {
+        self.value.into_inner()
     }
 }
 
@@ -93,24 +115,10 @@ impl<P: Parker, T> Lock<P, T> {
         self.lock_fast().unwrap_or_else(|| self.lock_slow())
     }
 
-    const VTABLE: RawWakerVTable = RawWakerVTable::new(
-        |ptr| unsafe {
-            (&*(ptr as *const P)).prepare_park();
-            RawWaker::new(ptr, &Self::VTABLE)
-        },
-        |ptr| unsafe { (&*(ptr as *const P)).unpark() },
-        |ptr| unsafe { (&*(ptr as *const P)).unpark() },
-        |_ptr| {},
-    );
-
     #[cold]
     fn lock_slow(&self) -> LockGuard<'_, P, T> {
         let parker = P::new();
-        let waker = unsafe {
-            let ptr = &parker as *const _ as *const ();
-            let raw_waker = RawWaker::new(ptr, &Self::VTABLE);
-            Waker::from_raw(raw_waker)
-        };
+        let waker = unsafe { ParkWaker::<P>::from(&parker) };
 
         let mut context = Context::from_waker(&waker);
         let mut future = LockFuture::new(LockState::Locking(self));
@@ -146,13 +154,13 @@ impl<P: Parker, T> Lock<P, T> {
             let tail = {
                 let mut current = head;
                 loop {
-                    if let Some(tail) = current.as_ref().tail.get().assume_init() {
-                        head.as_ref().tail.set(MaybeUninit::new(Some(tail)));
+                    if let Some(tail) = current.as_ref().tail.get() {
+                        head.as_ref().tail.set(Some(tail));
                         break tail;
                     } else {
-                        let next = current.as_ref().next.get().assume_init();
+                        let next = current.as_ref().next.get();
                         let next = next.expect("waiter next link not set while enqueued");
-                        next.as_ref().prev.set(MaybeUninit::new(Some(current)));
+                        next.as_ref().prev.set(Some(current));
                         current = next;
                     }
                 }
@@ -168,8 +176,8 @@ impl<P: Parker, T> Lock<P, T> {
                 is_fair.unwrap()
             });
 
-            if let Some(new_tail) = tail.as_ref().prev.get().assume_init() {
-                head.as_ref().tail.set(MaybeUninit::new(Some(new_tail)));
+            if let Some(new_tail) = tail.as_ref().prev.get() {
+                head.as_ref().tail.set(Some(new_tail));
                 if !be_fair {
                     self.state.fetch_and(!LOCKED, Ordering::Release);
                 }
@@ -183,15 +191,42 @@ impl<P: Parker, T> Lock<P, T> {
                 continue;
             }
 
-            if let Some(waker) = wait_state.parker.unpark(if be_fair {
+            let new_state = if be_fair {
                 WAKER_ACQUIRED
             } else {
                 WAKER_NOTIFIED
-            }) {
-                waker.wake();
+            };
+            state = wait_state.state.load(Ordering::Relaxed);
+            loop {
+                match state {
+                    WAKER_WAITING => match wait_state.state.compare_exchange_weak(
+                        WAKER_WAITING,
+                        WAKER_CONSUMING,
+                        Ordering::Acquire,
+                        Ordering::Relaxed,
+                    ) {
+                        Err(e) => state = e,
+                        Ok(_) => {
+                            let waker = wait_state
+                                .waker
+                                .replace(None)
+                                .expect("wait state without a waker");
+                            wait_state.state.store(new_state, Ordering::Release);
+                            return waker.wake();
+                        }
+                    },
+                    WAKER_UPDATING => match wait_state.state.compare_exchange_weak(
+                        WAKER_UPDATING,
+                        new_state,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Err(e) => state = e,
+                        Ok(_) => return,
+                    },
+                    _ => unreachable!("invalid Lock wait state {:?} when waking", state),
+                }
             }
-
-            return;
         }
     }
 }
@@ -203,8 +238,15 @@ enum LockState<'a, P: Parker, T> {
     Completed,
 }
 
+const WAKER_WAITING: usize = 0;
+const WAKER_UPDATING: usize = 1;
+const WAKER_CONSUMING: usize = 2;
+const WAKER_NOTIFIED: usize = 3;
+const WAKER_ACQUIRED: usize = 4;
+
 struct WaitState<P: Parker> {
-    parker: AsyncParker,
+    state: AtomicUsize,
+    waker: Cell<Option<Waker>>,
     force_fair_at: Cell<Option<P::Instant>>,
 }
 
@@ -235,7 +277,10 @@ impl<'a, P: Parker, T> Future for LockFuture<'a, P, T> {
             match &mut_self.state {
                 LockState::Locking(lock) => match mut_self.poll_lock(ctx, lock) {
                     Poll::Ready(guard) => mut_self.state = LockState::Locked(guard),
-                    Poll::Pending => mut_self.state = LockState::Waiting(lock),
+                    Poll::Pending => {
+                        mut_self.state = LockState::Waiting(lock);
+                        return Poll::Pending;
+                    }
                 },
                 LockState::Waiting(lock) => match mut_self.poll_wait(ctx, lock) {
                     Poll::Ready(Some(guard)) => mut_self.state = LockState::Locked(guard),
@@ -259,16 +304,19 @@ impl<'a, P: Parker, T> LockFuture<'a, P, T> {
         Self {
             state,
             waiter: Waiter::new(WaitState {
-                parker: AsyncParker::new(),
+                state: AtomicUsize::new(WAKER_WAITING),
+                waker: Cell::new(None),
                 force_fair_at: Cell::new(None),
             }),
             _pinned: PhantomPinned,
         }
     }
 
-    fn poll_lock(&self, ctx: &mut Context<'_>, lock: &'a Lock<P, T>) -> Poll<LockGuard<'a, P, T>> {
+    #[cold]
+    fn poll_lock(&self, ctx: &Context<'_>, lock: &'a Lock<P, T>) -> Poll<LockGuard<'a, P, T>> {
         let mut spin = 0;
         let waiter = &self.waiter;
+        let wait_state = unsafe { &*waiter.get() };
         let mut state = lock.state.load(Ordering::Relaxed);
 
         loop {
@@ -283,16 +331,18 @@ impl<'a, P: Parker, T> LockFuture<'a, P, T> {
                 continue;
             } else {
                 new_state = (state & !WAITING) | (waiter as *const _ as usize);
-                waiter.prev.set(MaybeUninit::new(None));
-                waiter.next.set(MaybeUninit::new(head));
-                waiter.tail.set(MaybeUninit::new(match head {
+                waiter.prev.set(None);
+                waiter.next.set(head);
+                waiter.tail.set(match head {
                     Some(_) => None,
                     None => Some(NonNull::from(waiter)),
-                }));
+                });
 
                 unsafe {
-                    let wait_state = &*waiter.get();
-                    wait_state.parker.prepare_park(ctx);
+                    if (&*wait_state.waker.as_ptr()).is_none() {
+                        wait_state.waker.set(Some(ctx.waker().clone()));
+                        wait_state.state.store(WAKER_WAITING, Ordering::Relaxed);
+                    }
 
                     if (&*wait_state.force_fair_at.as_ptr()).is_none() {
                         let timeout_ns = {
@@ -323,19 +373,51 @@ impl<'a, P: Parker, T> LockFuture<'a, P, T> {
         }
     }
 
+    #[cold]
     fn poll_wait(
         &self,
-        ctx: &mut Context<'_>,
+        ctx: &Context<'_>,
         lock: &'a Lock<P, T>,
     ) -> Poll<Option<LockGuard<'a, P, T>>> {
-        match unsafe {
-            let wait_state = &*self.waiter.get();
-            wait_state.parker.park(ctx)
-        } {
-            Poll::Ready(WAKER_ACQUIRED) => Poll::Ready(Some(LockGuard(lock))),
-            Poll::Ready(WAKER_NOTIFIED) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-            x => unreachable!("invalid waker poll state {:?}", x),
+        let wait_state = unsafe { &*self.waiter.get() };
+
+        let mut state = wait_state.state.load(Ordering::Relaxed);
+        loop {
+            match state {
+                WAKER_WAITING => match wait_state.state.compare_exchange_weak(
+                    WAKER_WAITING,
+                    WAKER_UPDATING,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                ) {
+                    Err(e) => state = e,
+                    Ok(_) => {
+                        wait_state.waker.set(Some(ctx.waker().clone()));
+                        match wait_state.state.compare_exchange(
+                            WAKER_UPDATING,
+                            WAKER_WAITING,
+                            Ordering::Release,
+                            Ordering::Relaxed,
+                        ) {
+                            Ok(_) => return Poll::Pending,
+                            Err(e) => {
+                                state = e;
+                                match state {
+                                    WAKER_NOTIFIED | WAKER_ACQUIRED => {}
+                                    _ => unreachable!(
+                                        "invalid Lock wait state when updating {:?}",
+                                        state
+                                    ),
+                                }
+                            }
+                        }
+                    }
+                },
+                WAKER_CONSUMING => return Poll::Pending,
+                WAKER_NOTIFIED => return Poll::Ready(None),
+                WAKER_ACQUIRED => return Poll::Ready(Some(LockGuard(lock))),
+                _ => unreachable!("invalid Lock wait state {:?} when polling", state),
+            }
         }
     }
 }
