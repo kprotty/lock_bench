@@ -37,7 +37,7 @@ mod os_lock;
 mod parking_lot_lock;
 mod spin_lock;
 mod std_lock;
-// mod usync_lock;
+mod usync_lock;
 // mod usync_mutex;
 mod test_fair_lock;
 mod test_fast_lock;
@@ -51,14 +51,16 @@ pub fn main() {
 
     for ctx in parsed.collect() {
         ctx.with_benchmarker(work_per_ns, |b| {
+            b.bench::<usync_lock::Lock>();
+            // b.bench::<usync_mutex::Lock>();
+
             #[cfg(any(windows, unix))]
             b.bench::<go_lock::Lock>();
             b.bench::<test_new_lock::Lock>();
             // b.bench::<test_mini_lock::Lock>();
-            b.bench::<test_fair_lock::Lock>();
-            b.bench::<test_word_lock::Lock>();
-            // b.bench::<usync_lock::Lock>();
-            // b.bench::<usync_mutex::Lock>();
+            // b.bench::<test_fair_lock::Lock>();
+            // b.bench::<test_word_lock::Lock>();
+            
 
             b.bench::<spin_lock::Lock>();
             b.bench::<std_lock::Lock>();

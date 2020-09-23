@@ -12,23 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+type Mutex<T> = usync::base::Lock<usync::SystemParker, T>;
+
 pub struct Lock {
-    inner: usync::core::Lock<()>,
+    inner: Mutex<()>,
 }
 
 impl super::Lock for Lock {
     fn name() -> &'static str {
-        "usync::core::Lock"
+        "usync::base::Lock"
     }
 
     fn new() -> Self {
         Self {
-            inner: usync::core::Lock::new(()),
+            inner: Mutex::new(()),
         }
     }
 
     fn with<F: FnOnce()>(&self, f: F) {
-        let _guard = self.inner.lock::<usync::core::SystemThreadParker>();
+        let _guard = self.inner.lock();
         let _ = f();
     }
 }

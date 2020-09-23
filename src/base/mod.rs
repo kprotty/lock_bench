@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub(crate) mod list;
-pub(crate) mod lock;
-pub(crate) mod atomic_waker;
+mod async_parker;
+mod list;
+mod lock;
+
+pub use async_parker::AsyncParker;
+pub use list::{List, Node};
+pub use lock::{Lock, LockFuture, LockGuard};

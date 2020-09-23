@@ -15,8 +15,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![warn(rust_2018_idioms, unreachable_pub)]
 
-mod shared;
+pub mod base;
 mod thread_parker;
 
-pub use shared::lock::{Lock, LockFuture, LockGuard};
 pub use thread_parker::*;
