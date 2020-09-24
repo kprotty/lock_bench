@@ -11,8 +11,8 @@ impl Add<Duration> for Instant {
     type Output = Self;
 
     fn add(self, time: Duration) -> Self {
-        let nanos: u64 = time.as_nanos().try_into().unwrap_or_else(|_| !0u64);
-        Self(self.0 + nanos)
+        let nanos: u64 = time.as_nanos().try_into().unwrap();
+        Self(self.0.wrapping_add(nanos))
     }
 }
 

@@ -116,7 +116,7 @@ impl Lock {
             if state & PARKED == 0 {
                 if spin <= 10 {
                     if spin <= 3 {
-                        (0..(1 << spin)).for_each(|_| spin_loop_hint());
+                        (0..(1 << spin)).for_each(|_: u32| spin_loop_hint());
                     } else if cfg!(windows) {
                         thread::sleep(Duration::new(0, 0));
                     } else {
@@ -161,11 +161,10 @@ impl Lock {
                     waiter.force_fair_at.set(Some(
                         Instant::now()
                             + Duration::new(0, {
-                                // use std::convert::TryInto;
-                                // let rng = queue.unwrap_or(NonNull::from(&waiter)).as_ptr() as usize;
-                                // let rng = (13 * rng) ^ (rng >> 15);
-                                // (rng % 1_000_000).try_into().unwrap()
-                                1_000_000
+                                use std::convert::TryInto;
+                                let rng = queue.unwrap_or(NonNull::from(&waiter)).as_ptr() as usize;
+                                let rng = (13 * rng) ^ (rng >> 15);
+                                (rng % 1_000_000).try_into().unwrap()
                             }),
                     ));
                 }

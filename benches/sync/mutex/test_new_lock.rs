@@ -15,7 +15,6 @@
 use super::instant::Instant;
 use std::{
     cell::Cell,
-    convert::TryInto,
     ptr::NonNull,
     sync::atomic::{spin_loop_hint, AtomicUsize, Ordering},
     thread,
@@ -76,7 +75,7 @@ impl Lock {
 
     #[cold]
     unsafe fn acquire_slow(&self) {
-        let mut spin = 0;
+        let mut spin = 0u8;
         let waiter = Waiter {
             state: AtomicUsize::new(EVENT_WAITING),
             prev: Cell::new(None),
@@ -93,9 +92,9 @@ impl Lock {
 
             if state & LOCKED == 0 {
                 new_state = state | LOCKED;
-            } else if head.is_none() && spin <= 10 {
-                if spin <= 3 {
-                    (0..(1 << spin)).for_each(|_| spin_loop_hint());
+            } else if spin <= 5 {
+                if spin < 4 {
+                    for _ in 0..(2 << spin) { spin_loop_hint(); }
                 } else if cfg!(windows) {
                     thread::sleep(Duration::new(0, 0));
                 } else {
@@ -122,10 +121,11 @@ impl Lock {
                     waiter.force_fair_at.set(Some({
                         Instant::now()
                             + Duration::new(0, {
-                                let ptr = head.unwrap_or(NonNull::from(&waiter)).as_ptr() as usize;
-                                let ptr = ((ptr * 13) ^ (ptr >> 15)) & (!0u32 as usize);
-                                let rng_u32: u32 = ptr.try_into().unwrap();
-                                rng_u32 % 1_000_000
+                                use std::convert::TryInto;
+                                let rng = head.unwrap_or(NonNull::from(&waiter)).as_ptr() as usize;
+                                let rng = (13 * rng) ^ (rng >> 15);
+                                let rng: u32 = (rng % 500_000).try_into().unwrap();
+                                rng + 500_000
                             })
                     }));
                 }
