@@ -46,6 +46,7 @@ mod test_new_lock;
 mod test_word_lock;
 mod simple_mutex_lock;
 mod zap_lock;
+mod mcs_lock;
 
 pub fn main() {
     let work_per_ns = WorkUnit::work_per_ns();
@@ -53,19 +54,20 @@ pub fn main() {
 
     for ctx in parsed.collect() {
         ctx.with_benchmarker(work_per_ns, |b| {
-            b.bench::<zap_lock::Lock>();
+            // b.bench::<zap_lock::Lock>();
             // b.bench::<usync_mutex::Lock>();
             // b.bench::<usync_lock::Lock>();
 
-            #[cfg(any(windows, unix))]
-            b.bench::<go_lock::Lock>();
+            // #[cfg(any(windows, unix))]
+            // b.bench::<go_lock::Lock>();
             b.bench::<test_new_lock::Lock>();
             // b.bench::<test_mini_lock::Lock>();
             // b.bench::<test_fair_lock::Lock>();
             // b.bench::<test_word_lock::Lock>();
             
 
-            // b.bench::<spin_lock::Lock>();
+            b.bench::<mcs_lock::Lock>();
+            b.bench::<spin_lock::Lock>();
             b.bench::<std_lock::Lock>();
             // #[cfg(any(windows, unix))]
             // b.bench::<os_lock::Lock>();
