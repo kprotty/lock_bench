@@ -75,7 +75,7 @@ impl Lock {
             }
 
             if spin < 4 {
-                (0..32).for_each(|_| spin_loop_hint());
+                (0..(3 << spin)).for_each(|_| spin_loop_hint());
                 state = self.state.load(Ordering::Relaxed);
                 spin += 1;
             } else if spin < 5 {
@@ -188,7 +188,41 @@ mod futex {
     }
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(target_os = "linux")]
+mod futex {
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    pub struct Futex {}
+
+    impl Futex {
+        pub fn new() -> Self {
+            Self {}
+        }
+
+        pub unsafe fn wait(&self, state: &AtomicI32, value: i32) {
+            while state.load(Ordering::Acquire) == value {
+                let _ = libc::syscall(
+                    libc::SYS_futex,
+                    state,
+                    libc::FUTEX_PRIVATE_FLAG | libc::FUTEX_WAIT,
+                    value,
+                    0
+                );
+            }
+        }
+
+        pub unsafe fn wake(&self, state: &AtomicI32) {
+            let _ = libc::syscall(
+                libc::SYS_futex,
+                state,
+                libc::FUTEX_PRIVATE_FLAG | libc::FUTEX_WAKE,
+                1
+            );
+        }
+    }
+}
+
+#[cfg(all(unix, not(any(windows, target_os = "linux"))))]
 mod futex {
     use super::{super as mutex, AtomicI32, Ordering};
     use std::{

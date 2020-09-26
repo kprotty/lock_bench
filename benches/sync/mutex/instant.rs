@@ -137,3 +137,19 @@ impl Instant {
         counter.wrapping_mul(1_000_000_000) / frequency
     }
 }
+
+#[cfg(target_os = "linux")]
+impl Instant {
+    #[cfg(all(target_os = "linux", any(target_arch = "arm", target_arch = "s390x")))]
+    const IS_ACTUALLY_MONOTONIC: bool = false;
+
+    #[cfg(not(all(target_os = "linux", any(target_arch = "arm", target_arch = "s390x"))))]
+    const IS_ACTUALLY_MONOTONIC: bool = true;
+
+    unsafe fn nanotime() -> u64 {
+        let mut ts = std::mem::MaybeUninit::uninit();
+        let _ = libc::clock_gettime(libc::CLOCK_MONOTONIC, ts.as_mut_ptr());
+        let ts = ts.assume_init();
+        ((ts.tv_sec as u64) * (1_000_000_000)) + (ts.tv_nsec as u64)
+    }
+}

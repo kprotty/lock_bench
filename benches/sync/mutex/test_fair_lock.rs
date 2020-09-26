@@ -21,6 +21,11 @@ use std::{
     time::Duration,
 };
 
+#[cfg(target_os = "windows")]
+type InnerLock = super::os_lock::Lock;
+#[cfg(target_os = "linux")]
+type InnerLock = super::go_lock::Lock;
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 type InnerLock = super::test_new_lock::Lock;
 
 pub struct Lock {
