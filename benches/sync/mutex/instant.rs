@@ -4,7 +4,7 @@ pub use custom::Instant;
 #[cfg(not(any(windows, target_os = "linux")))]
 pub use std::time::Instant;
 
-
+#[cfg(any(windows, target_os = "linux"))]
 mod custom {
     use std::{
         convert::TryInto,
