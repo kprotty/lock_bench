@@ -224,14 +224,15 @@ mod futex {
 
 #[cfg(all(unix, not(any(windows, target_os = "linux"))))]
 mod futex {
-    use super::{super as mutex, AtomicI32, Ordering};
+    use super::{AtomicI32, Ordering};
     use std::{
         cell::{Cell, UnsafeCell},
         ptr::NonNull,
         thread,
     };
 
-    type InnerLock = mutex::spin_lock::Lock;
+    use super::super::Lock;
+    type InnerLock = super::super::spin_lock::Lock;
 
     struct Waiter {
         next: Cell<Option<NonNull<Self>>>,
@@ -257,7 +258,6 @@ mod futex {
         }
 
         unsafe fn with_queue<F>(&self, f: impl FnOnce(&mut Option<NonNull<Waiter>>) -> F) -> F {
-            use mutex::Lock;
             let mut res = None;
             self.lock.with(|| res = Some(f(&mut *self.waiters.get())));
             res.unwrap()
@@ -296,7 +296,7 @@ mod futex {
             }
         }
 
-        pub unsafe fn wake(&self, state: &AtomicI32) {
+        pub unsafe fn wake(&self, _state: &AtomicI32) {
             if let Some(waiter) = self.with_queue(|queue| {
                 let waiter = match *queue {
                     Some(waiter) => waiter,
