@@ -232,7 +232,7 @@ mod futex {
     };
 
     use super::super::Lock;
-    type InnerLock = super::super::spin_lock::Lock;
+    type InnerLock = super::super::test_word_lock::Lock;
 
     struct Waiter {
         next: Cell<Option<NonNull<Self>>>,
