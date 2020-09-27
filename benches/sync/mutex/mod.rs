@@ -149,9 +149,9 @@ impl Parser {
         } = self;
         let mut contexes = Vec::new();
 
-        for threads in threads {
+        for &unlocked in unlocked.iter()  {
             for &locked in locked.iter() {
-                for &unlocked in unlocked.iter() {
+                for &threads in threads.iter() {
                     for &measure in measure.iter() {
                         contexes.push(Context {
                             num_threads: threads,
