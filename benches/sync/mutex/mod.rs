@@ -47,6 +47,8 @@ mod test_word_lock;
 mod simple_mutex_lock;
 mod zap_lock;
 mod mcs_lock;
+mod new_unfair_lock;
+mod word_lock_waking;
 
 pub fn main() {
     let work_per_ns = WorkUnit::work_per_ns();
@@ -60,6 +62,9 @@ pub fn main() {
 
             #[cfg(any(windows, unix))]
             b.bench::<go_lock::Lock>();
+
+            b.bench::<new_unfair_lock::Lock>();
+            b.bench::<word_lock_waking::Lock>();
             b.bench::<test_new_lock::Lock>();
             // b.bench::<test_mini_lock::Lock>();
             b.bench::<test_fair_lock::Lock>();
