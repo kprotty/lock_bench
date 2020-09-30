@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(windows)]
 use super::instant::Instant;
+#[cfg(not(windows))]
+use std::time::Instant;
+
 use std::{
     cell::{Cell, UnsafeCell},
     ptr::NonNull,
@@ -21,12 +25,44 @@ use std::{
     time::Duration,
 };
 
+/*
 #[cfg(target_os = "windows")]
 type InnerLock = super::os_lock::Lock;
 #[cfg(target_os = "linux")]
 type InnerLock = super::go_lock::Lock;
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
 type InnerLock = super::test_new_lock::Lock;
+*/
+
+type InnerLock = super::test_word_lock::Lock;
+/*
+use std::sync::atomic::AtomicBool;
+struct InnerLock(AtomicBool);
+impl super::Lock for InnerLock {
+    fn name() -> &'static str {
+        "inner_lock"
+    }
+
+    fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    fn with<F: FnOnce()>(&self, f: F) {
+        let mut v = false;
+        loop {
+            if !v {
+                v = self.0.swap(true, Ordering::Acquire);
+                if !v { break; }
+            }
+            spin_loop_hint();
+            v = self.0.load(Ordering::Relaxed);
+        }
+
+        let _ = f();
+        self.0.store(false, Ordering::Release);
+    }
+}
+*/
 
 pub struct Lock {
     state: AtomicUsize,
@@ -119,18 +155,14 @@ impl Lock {
             }
 
             if state & PARKED == 0 {
-                if spin <= 10 {
-                    if spin <= 3 {
-                        (0..(1 << spin)).for_each(|_: u32| spin_loop_hint());
-                    } else if cfg!(windows) {
-                        thread::sleep(Duration::new(0, 0));
-                    } else {
-                        thread::yield_now();
-                    }
+                if spin <= 5 {
                     spin += 1;
+                    (0..(1 << spin)).for_each(|_| spin_loop_hint());
                     state = self.state.load(Ordering::Relaxed);
                     continue;
-                } else if let Err(e) = self.state.compare_exchange_weak(
+                }
+
+                if let Err(e) = self.state.compare_exchange_weak(
                     state,
                     state | PARKED,
                     Ordering::Relaxed,
@@ -141,6 +173,18 @@ impl Lock {
                 }
             }
 
+            if (&*waiter.thread.as_ptr()).is_none() {
+                waiter.thread.set(Some(thread::current()));
+                waiter.state.store(EVENT_WAITING, Ordering::Relaxed);
+            }
+
+            if (&*waiter.force_fair_at.as_ptr()).is_none() {
+                waiter.force_fair_at.set(Some(
+                    Instant::now()
+                        + Duration::new(0, 1_000_000),
+                ));
+            }
+
             if self.with_queue(|queue| {
                 if self.state.load(Ordering::Relaxed) != (LOCKED | PARKED) {
                     return false;
@@ -148,30 +192,12 @@ impl Lock {
 
                 waiter.next.set(None);
                 waiter.tail.set(NonNull::from(&waiter));
-                waiter.state.store(EVENT_WAITING, Ordering::Relaxed);
-
                 if let Some(head) = *queue {
                     let tail = head.as_ref().tail.get();
                     tail.as_ref().next.set(Some(NonNull::from(&waiter)));
                     head.as_ref().tail.set(NonNull::from(&waiter));
                 } else {
                     *queue = Some(NonNull::from(&waiter));
-                }
-
-                if (&*waiter.thread.as_ptr()).is_none() {
-                    waiter.thread.set(Some(thread::current()));
-                }
-
-                if (&*waiter.force_fair_at.as_ptr()).is_none() {
-                    waiter.force_fair_at.set(Some(
-                        Instant::now()
-                            + Duration::new(0, {
-                                use std::convert::TryInto;
-                                let rng = queue.unwrap_or(NonNull::from(&waiter)).as_ptr() as usize;
-                                let rng = (13 * rng) ^ (rng >> 15);
-                                (rng % 1_000_000).try_into().unwrap()
-                            }),
-                    ));
                 }
 
                 true

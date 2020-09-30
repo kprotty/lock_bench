@@ -88,15 +88,9 @@ impl Lock {
 
             if state & LOCKED == 0 {
                 new_state = state | LOCKED;
-            } else if head.is_none() && spin <= 10 {
-                if spin <= 3 {
-                    (0..(1 << spin)).for_each(|_| spin_loop_hint());
-                } else if cfg!(windows) {
-                    thread::sleep(std::time::Duration::new(0, 0));
-                } else {
-                    thread::yield_now();
-                }
+            } else if head.is_none() && spin <= 5 {
                 spin += 1;
+                (0..(1 << spin)).for_each(|_| spin_loop_hint());
                 state = self.state.load(Ordering::Relaxed);
                 continue;
             } else {

@@ -37,29 +37,20 @@ impl super::Lock for Lock {
 }
 
 impl Lock {
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    fn try_acquire(&self) -> bool {
-        !self.locked.swap(true, Ordering::Acquire)
-    }
-
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-    fn try_acquire(&self) -> bool {
-        self.locked
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
-    }
-
     fn acquire(&self) {
-        let mut spin = 0;
-        while !self.try_acquire() {
-            if spin <= 6 {
-                (0..(1 << spin)).for_each(|_| spin_loop_hint());
-                spin += 1;
-            } else if cfg!(windows) {
-                std::thread::sleep(std::time::Duration::new(0, 0));
-            } else {
-                std::thread::yield_now();
+        let mut locked = false;
+        loop {
+            if !locked {
+                if self
+                    .locked
+                    .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    return;
+                }
             }
+            spin_loop_hint();
+            locked = self.locked.load(Ordering::Relaxed);
         }
     }
 
