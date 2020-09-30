@@ -60,8 +60,8 @@ pub fn main() {
             // b.bench::<usync_mutex::Lock>();
             // b.bench::<usync_lock::Lock>();
 
-            // #[cfg(any(windows, unix))]
-            // b.bench::<go_lock::Lock>();
+            #[cfg(any(windows, unix))]
+            b.bench::<go_lock::Lock>();
 
             // b.bench::<spin_lock::Lock>();
 
@@ -70,7 +70,7 @@ pub fn main() {
             // b.bench::<test_new_lock::Lock>();
             // b.bench::<test_mini_lock::Lock>();
             b.bench::<test_fair_lock::Lock>();
-            // b.bench::<test_word_lock::Lock>();
+            b.bench::<test_word_lock::Lock>();
             
 
             // b.bench::<mcs_lock::Lock>();
