@@ -73,6 +73,8 @@ impl Lock {
     #[cold]
     unsafe fn acquire_slow(&self) {
         let mut spin = 0;
+        let max_spin = if cfg!(windows) { 10 } else { 5 };
+
         let waiter = Waiter {
             state: AtomicUsize::new(EVENT_WAITING),
             prev: Cell::new(None),
@@ -88,7 +90,7 @@ impl Lock {
 
             if state & LOCKED == 0 {
                 new_state = state | LOCKED;
-            } else if head.is_none() && spin <= 5 {
+            } else if head.is_none() && spin < max_spin {
                 spin += 1;
                 (0..(1 << spin)).for_each(|_| spin_loop_hint());
                 state = self.state.load(Ordering::Relaxed);

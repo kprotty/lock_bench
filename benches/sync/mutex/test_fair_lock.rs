@@ -155,7 +155,8 @@ impl Lock {
             }
 
             if state & PARKED == 0 {
-                if spin <= 5 {
+                let max_spin = if cfg!(windows) { 10 } else { 5 };
+                if spin < max_spin {
                     spin += 1;
                     (0..(1 << spin)).for_each(|_| spin_loop_hint());
                     state = self.state.load(Ordering::Relaxed);

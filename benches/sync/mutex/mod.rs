@@ -564,7 +564,7 @@ impl WorkUnit {
             let ns = record(|| WorkUnit::run(num_steps));
 
             let elapsed = (ns - timer_overhead).as_nanos();
-            (num_steps / elapsed).max(1)
+            (elapsed / num_steps).max(1)
         };
 
         let attempts = 10;
