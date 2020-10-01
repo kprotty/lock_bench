@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![cfg_attr(not(feature = "std"), no_std)]
-#![warn(rust_2018_idioms, unreachable_pub)]
+mod list;
+pub use list::{List, Node};
 
-pub mod parker;
-pub mod raw;
-mod shared;
-pub mod sync;
+mod waker_parker;
+pub use waker_parker::WakerParker;
