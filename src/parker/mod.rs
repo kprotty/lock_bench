@@ -14,16 +14,16 @@
 
 use core::{ops::Add, time::Duration};
 
-pub unsafe trait ThreadParker: Sync {
+pub unsafe trait Parker: Sized + Sync + Send {
     type Instant: Copy + PartialOrd + Add<Duration, Output = Self::Instant>;
 
     fn new() -> Self;
 
-    fn prepare_park(&self);
+    fn prepare(&self);
 
     fn park(&self);
 
-    fn park_until(&self, deadline: Self::Instant);
+    fn park_until(&self, deadline: Self::Instant) -> bool;
 
     fn unpark(&self);
 
@@ -32,22 +32,12 @@ pub unsafe trait ThreadParker: Sync {
     fn yield_now(iteration: usize) -> bool;
 }
 
-#[cfg(feature = "spin")]
-mod spin_parker;
-#[cfg(feature = "spin")]
-pub type SpinThreadParker = spin_parker::Parker;
-
 #[cfg(feature = "std")]
 mod std_parker;
 #[cfg(feature = "std")]
-pub type StdThreadParker = std_parker::Parker;
+pub use std_parker::StdParker;
 
-#[cfg(feature = "os")]
-mod os_parker;
-#[cfg(feature = "os")]
-pub type OsThreadParker = os_parker::Parker;
-
-#[cfg(feature = "std")]
-pub type SystemParker = StdThreadParker;
-#[cfg(all(feature = "os", not(feature = "std")))]
-pub type SystemParker = OsThreadParker;
+#[cfg(feature = "spin")]
+mod spin_parker;
+#[cfg(feature = "spin")]
+pub use spin_parker::SpinParker;

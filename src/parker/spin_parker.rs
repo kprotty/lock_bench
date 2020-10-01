@@ -19,66 +19,63 @@ use core::{
     time::Duration,
 };
 
-pub struct Parker {
+const WAITING: usize = 0;
+const NOTIFIED: usize = 1;
+
+#[derive(Debug, Default)]
+pub struct SpinParker {
     notified: AtomicUsize,
 }
 
-unsafe impl super::ThreadParker for Parker {
-    type Instant = Instant;
+unsafe impl super::Parker for SpinParker {
+    type Instant = SpinInstant;
 
     fn new() -> Self {
-        Self {
-            notified: AtomicUsize::new(0),
-        }
+        Self::default()
     }
 
-    fn prepare_park(&self) {
-        self.notified.store(0, Ordering::Relaxed);
+    fn prepare(&self) {
+        self.notified.store(WAITING, Ordering::Relaxed);
     }
 
     fn park(&self) {
-        while self.notified.load(Ordering::Acquire) == 0 {
+        while self.notified.load(Ordering::Acquire) == WAITING {
             spin_loop_hint();
         }
     }
 
-    fn park_until(&self, _deadline: Self::Instant) {
-        self.park()
+    fn park_until(&self, _deadline: Self::Instant) -> bool {
+        self.park();
+        true
     }
 
     fn unpark(&self) {
-        self.notified.store(1, Ordering::Release);
+        self.notified.store(NOTIFIED, Ordering::Release);
     }
 
     fn now() -> Self::Instant {
-        Self::Instant {}
+        Self::Instant::default()
     }
 
     fn yield_now(_iteration: usize) -> bool {
         spin_loop_hint();
-        true
+        false
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub struct Instant;
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct SpinInstant {}
 
-impl Ord for Instant {
-    fn cmp(&self, _other: &Self) -> CmpOrdering {
-        CmpOrdering::Equal
+impl PartialOrd for SpinInstant {
+    fn partial_cmp(&self, _other: &Self) -> Option<CmpOrdering> {
+        None
     }
 }
 
-impl PartialOrd for Instant {
-    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Add<Duration> for Instant {
+impl Add<Duration> for SpinInstant {
     type Output = Self;
 
     fn add(self, _other: Duration) -> Self {
-        Self {}
+        self
     }
 }

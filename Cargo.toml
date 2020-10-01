@@ -11,10 +11,8 @@ categories = ["concurrency"]
 
 [features]
 default = ["full"]
-# full = ["std", "os", "spin"]
-full = ["std"]
+full = ["std", "spin"]
 
 spin = []
 std = []
-os = []
 

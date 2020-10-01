@@ -15,6 +15,6 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![warn(rust_2018_idioms, unreachable_pub)]
 
-pub mod base;
+mod base;
+pub mod parker;
 pub mod sync;
-pub mod thread_parker;
